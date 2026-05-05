@@ -37,6 +37,9 @@ class Settings:
     es_trade_index: str
     es_cash_flow_index: str
     es_price_history_index: str
+    redis_url: str
+    cache_ttl_seconds: int
+    cache_key_prefix: str
 
 
 @lru_cache
@@ -64,4 +67,7 @@ def get_settings() -> Settings:
         es_trade_index=os.getenv("ES_TRADE_INDEX", "ibkr_trade_records_v1"),
         es_cash_flow_index=os.getenv("ES_CASH_FLOW_INDEX", "ibkr_cash_flow_records_v1"),
         es_price_history_index=os.getenv("ES_PRICE_HISTORY_INDEX", "ibkr_symbol_price_history_v1"),
+        redis_url=os.getenv("REDIS_URL", ""),
+        cache_ttl_seconds=int(os.getenv("CACHE_TTL_SECONDS", "86400")),
+        cache_key_prefix=os.getenv("CACHE_KEY_PREFIX", "ibkr-show"),
     )

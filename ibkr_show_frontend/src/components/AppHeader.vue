@@ -6,20 +6,18 @@ import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 
 import { useAuthSession } from '@/auth/session'
-import { fetchAccountOverview } from '@/api/account'
-import type { AccountOverview } from '@/types/account'
+import { useAccountOverviewData } from '@/composables/accountOverview'
 
 const route = useRoute()
 const router = useRouter()
 const { authState, ensureAuthSession, loginWithCredentials, logoutCurrentSession } = useAuthSession()
-const overview = ref<AccountOverview | null>(null)
+const { overview, ensureLoaded, startAutoRefresh, stopAutoRefresh } = useAccountOverviewData()
 const showLoginDialog = ref(false)
 const loginError = ref('')
 const loginForm = reactive({
   username: '',
   password: '',
 })
-let refreshTimer: number | null = null
 
 const baseNavItems = [
   { label: '总览', icon: 'pi pi-chart-line', to: '/' },
@@ -29,6 +27,7 @@ const baseNavItems = [
 const protectedNavItems = [
   { label: '交易', icon: 'pi pi-list', to: '/trades' },
   { label: '出入金', icon: 'pi pi-wallet', to: '/cash-flows' },
+  { label: '股息', icon: 'pi pi-building-columns', to: '/dividends' },
 ]
 
 const navItems = computed(() =>
@@ -40,7 +39,7 @@ function isActive(path: string): boolean {
 }
 
 function isProtectedPath(path: string): boolean {
-  return path === '/trades' || path === '/cash-flows'
+  return path === '/trades' || path === '/cash-flows' || path === '/dividends'
 }
 
 function navigate(path: string): void {
@@ -56,14 +55,6 @@ function formatNumber(value: number | null, digits = 2): string {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(value)
-}
-
-async function loadOverview(): Promise<void> {
-  try {
-    overview.value = await fetchAccountOverview()
-  } catch {
-    overview.value = null
-  }
 }
 
 function openLoginDialog(): void {
@@ -99,16 +90,12 @@ async function handleLogout(): Promise<void> {
 
 onMounted(() => {
   void ensureAuthSession()
-  void loadOverview()
-  refreshTimer = window.setInterval(() => {
-    void loadOverview()
-  }, 30000)
+  void ensureLoaded()
+  startAutoRefresh()
 })
 
 onUnmounted(() => {
-  if (refreshTimer !== null) {
-    window.clearInterval(refreshTimer)
-  }
+  stopAutoRefresh()
 })
 </script>
 

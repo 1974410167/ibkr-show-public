@@ -365,10 +365,10 @@ class TransformResult:
 
 
 def transform_daily_statement(statement: FlexStatement) -> TransformResult:
-    latest_account_document = _transform_account_daily_snapshot(statement)
     account_documents_by_id = {
         document["_id"]: document for document in transform_account_history_statement(statement, "daily_snapshot")
     }
+    latest_account_document = _transform_account_daily_snapshot(statement) if _is_single_day_statement(statement) else None
     if latest_account_document:
         account_documents_by_id[latest_account_document["_id"]] = latest_account_document
 
@@ -387,6 +387,30 @@ def transform_daily_statement(statement: FlexStatement) -> TransformResult:
         cash_flow_documents=cash_flow_documents,
         price_history_documents=price_history_documents,
     )
+
+
+def _is_single_day_statement(statement: FlexStatement) -> bool:
+    from_date = statement.metadata.from_date
+    to_date = statement.metadata.to_date
+    if from_date and to_date and from_date == to_date:
+        return True
+
+    equt_section = statement.get_section("EQUT")
+    if equt_section:
+        report_dates = {
+            to_iso_date(_get_value(row, "ReportDate"))
+            for row in equt_section.rows
+            if to_iso_date(_get_value(row, "ReportDate")) is not None
+        }
+        if len(report_dates) > 1:
+            return False
+        if len(report_dates) == 1 or len(equt_section.rows) <= 1:
+            return True
+
+    if from_date and to_date:
+        return False
+
+    return True
 
 
 def _transform_price_history(statement: FlexStatement, source_query_type: str) -> list[dict]:
@@ -534,16 +558,28 @@ def _transform_cash_flow_rows(
     return documents
 
 
+def _is_dividend_related_flow_type(flow_type: str) -> bool:
+    normalized = flow_type.strip()
+    if normalized == "Withholding Tax":
+        return True
+    if "Payment In Lieu" in normalized:
+        return True
+    return "Dividend" in normalized
+
+
+def _is_supported_cash_flow_type(flow_type: str | None) -> bool:
+    normalized = (flow_type or "").strip()
+    if normalized == "Deposits/Withdrawals":
+        return True
+    return _is_dividend_related_flow_type(normalized)
+
+
 def _transform_daily_cash_flows(statement: FlexStatement, source_query_type: str) -> list[dict]:
     section = statement.get_section("CTRN")
     if section is None:
         return []
 
-    relevant_rows = [
-        row
-        for row in section.rows
-        if (_get_value(row, "Type") or "").strip() == "Deposits/Withdrawals"
-    ]
+    relevant_rows = [row for row in section.rows if _is_supported_cash_flow_type(_get_value(row, "Type"))]
     return _transform_cash_flow_rows(relevant_rows, statement.source_file, source_query_type)
 
 

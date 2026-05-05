@@ -30,6 +30,6 @@ export function fetchTrades(params: TradeQuery): Promise<TradeListResponse> {
   return request<TradeListResponse>(`/api/trades${toQueryString(params)}`)
 }
 
-export function fetchTradeSummary(params: Omit<TradeQuery, 'sort_by' | 'sort_order' | 'page' | 'page_size' | 'buy_sell'>): Promise<TradeSummaryResponse> {
+export function fetchTradeSummary(params: Omit<TradeQuery, 'sort_by' | 'sort_order' | 'page' | 'page_size'>): Promise<TradeSummaryResponse> {
   return request<TradeSummaryResponse>(`/api/trades/summary${toQueryString(params)}`)
 }

@@ -48,3 +48,17 @@ class ElasticsearchClient:
         except ESConnectionError as exc:
             raise ESUnavailableError("Elasticsearch is not reachable.") from exc
 
+    def multi_search(self, searches: list[tuple[str, dict]]) -> list[dict]:
+        payload: list[dict] = []
+        for index, body in searches:
+            payload.append({"index": index})
+            payload.append(body)
+
+        try:
+            response = self._client.msearch(searches=payload)
+        except NotFoundError as exc:
+            raise ESIndexNotFoundError("Elasticsearch multi-search references a missing index.") from exc
+        except ESConnectionError as exc:
+            raise ESUnavailableError("Elasticsearch is not reachable.") from exc
+
+        return list(response.get("responses", []))

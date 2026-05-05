@@ -31,6 +31,14 @@ const router = createRouter({
         requiresAuth: true,
       },
     },
+    {
+      path: '/dividends',
+      name: 'dividends',
+      component: () => import('@/views/DividendsView.vue'),
+      meta: {
+        requiresAuth: true,
+      },
+    },
   ],
 })
 

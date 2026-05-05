@@ -7,6 +7,12 @@ from app.schemas.cash_flows import (
 )
 from app.schemas.charts import EquityCurvePoint, EquityCurveResponse
 from app.schemas.common import PaginationInfo
+from app.schemas.dividends import (
+    DividendCurrencySummaryItem,
+    DividendItem,
+    DividendListResponse,
+    DividendSummaryResponse,
+)
 from app.schemas.positions import PositionItem, PositionListResponse, PositionSummaryResponse
 from app.schemas.trades import TradeItem, TradeListResponse, TradeSummaryResponse
 
@@ -119,3 +125,35 @@ def test_cash_flow_response_schema_instantiates() -> None:
     assert response.items[0].flow_direction == "deposit"
     assert summary.net_amount == 100.0
     assert summary.by_currency[0].currency == "USD"
+
+
+def test_dividend_response_schema_instantiates() -> None:
+    pagination = PaginationInfo(page=1, page_size=20, total=1, total_pages=1)
+    response = DividendListResponse(
+        items=[DividendItem(account_id="U1", currency="USD", symbol="MSFT", amount=14.56, flow_type="Dividends")],
+        pagination=pagination,
+    )
+    summary = DividendSummaryResponse(
+        record_count=2,
+        dividend_count=1,
+        withholding_tax_count=1,
+        gross_dividend_amount=14.56,
+        withholding_tax_amount=-1.46,
+        net_amount=13.1,
+        by_currency=[
+            DividendCurrencySummaryItem(
+                currency="USD",
+                record_count=2,
+                dividend_count=1,
+                withholding_tax_count=1,
+                gross_dividend_amount=14.56,
+                withholding_tax_amount=-1.46,
+                net_amount=13.1,
+            )
+        ],
+    )
+
+    assert response.items[0].symbol == "MSFT"
+    assert response.items[0].flow_type == "Dividends"
+    assert summary.net_amount == 13.1
+    assert summary.by_currency[0].withholding_tax_count == 1

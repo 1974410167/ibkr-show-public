@@ -4,12 +4,12 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Paginator from 'primevue/paginator'
 
-import { fetchTrades } from '@/api/trades'
+import { fetchTradeSummary, fetchTrades } from '@/api/trades'
 import ErrorBlock from '@/components/ErrorBlock.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import StatCard from '@/components/StatCard.vue'
 import TradeTable from '@/components/TradeTable.vue'
-import type { TradeItem } from '@/types/trades'
+import type { TradeItem, TradeListResponse, TradeSummaryResponse } from '@/types/trades'
 
 const state = reactive({
   start_date: '',
@@ -20,7 +20,8 @@ const state = reactive({
   page_size: 20,
 })
 
-const tradeItems = ref<TradeItem[]>([])
+const tradeResponse = ref<TradeListResponse | null>(null)
+const tradeSummary = ref<TradeSummaryResponse | null>(null)
 const loading = ref(true)
 const errorMessage = ref('')
 const sortKey = ref<'proceeds' | 'fifo_pnl_realized' | null>(null)
@@ -36,76 +37,10 @@ function formatNumber(value: number | null, digits = 2): string {
   }).format(value)
 }
 
-const sortedTrades = computed(() => {
-  const values = [...tradeItems.value]
-  if (!sortKey.value) {
-    return values
-  }
+const tradeItems = computed<TradeItem[]>(() => tradeResponse.value?.items ?? [])
 
-  values.sort((left, right) => {
-    const leftValue = typeof left[sortKey.value!] === 'number' ? Number(left[sortKey.value!]) : Number.NEGATIVE_INFINITY
-    const rightValue = typeof right[sortKey.value!] === 'number' ? Number(right[sortKey.value!]) : Number.NEGATIVE_INFINITY
-    const result = leftValue - rightValue
-    return sortOrder.value === 'asc' ? result : -result
-  })
-
-  return values
-})
-
-const paginatedTrades = computed(() => {
-  const startIndex = (state.page - 1) * state.page_size
-  return sortedTrades.value.slice(startIndex, startIndex + state.page_size)
-})
-
-const tradeSummary = computed(() => {
-  const items = tradeItems.value
-  const proceedsByCurrency = new Map<string, number>()
-
-  items.forEach((item) => {
-    const currency = `${item.currency ?? ''}`.trim() || '未标币种'
-    proceedsByCurrency.set(currency, (proceedsByCurrency.get(currency) ?? 0) + (item.proceeds ?? 0))
-  })
-
-  return {
-    trade_count: items.length,
-    buy_count: items.filter((item) => item.buy_sell === 'BUY').length,
-    sell_count: items.filter((item) => item.buy_sell === 'SELL').length,
-    total_commission: items.reduce((sum, item) => sum + (item.ib_commission ?? 0), 0),
-    total_realized_pnl: items.reduce((sum, item) => sum + (item.fifo_pnl_realized ?? 0), 0),
-    proceeds_by_currency: Array.from(proceedsByCurrency.entries())
-      .filter(([currency]) => currency !== '未标币种')
-      .sort((left, right) => left[0].localeCompare(right[0]))
-      .map(([currency, amount]) => ({ currency, amount })),
-  }
-})
-
-async function fetchAllTrades(): Promise<TradeItem[]> {
-  const filters = {
-    start_date: state.start_date,
-    end_date: state.end_date,
-    symbol: state.symbol.trim().toUpperCase(),
-    buy_sell: state.buy_sell,
-    sort_by: 'date_time',
-    sort_order: 'desc' as const,
-    page_size: 200,
-  }
-
-  const firstPage = await fetchTrades({
-    ...filters,
-    page: 1,
-  })
-
-  const items = [...firstPage.items]
-
-  for (let page = 2; page <= firstPage.pagination.total_pages; page += 1) {
-    const nextPage = await fetchTrades({
-      ...filters,
-      page,
-    })
-    items.push(...nextPage.items)
-  }
-
-  return items
+function currentSortBy(): 'date_time' | 'proceeds' | 'fifo_pnl_realized' {
+  return sortKey.value ?? 'date_time'
 }
 
 async function loadTrades(): Promise<void> {
@@ -113,7 +48,24 @@ async function loadTrades(): Promise<void> {
   errorMessage.value = ''
 
   try {
-    tradeItems.value = await fetchAllTrades()
+    const filters = {
+      start_date: state.start_date,
+      end_date: state.end_date,
+      symbol: state.symbol.trim().toUpperCase(),
+      buy_sell: state.buy_sell,
+    }
+    const [summaryResponse, listResponse] = await Promise.all([
+      fetchTradeSummary(filters),
+      fetchTrades({
+        ...filters,
+        sort_by: currentSortBy(),
+        sort_order: sortOrder.value,
+        page: state.page,
+        page_size: state.page_size,
+      }),
+    ])
+    tradeSummary.value = summaryResponse
+    tradeResponse.value = listResponse
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载交易记录失败'
   } finally {
@@ -139,11 +91,13 @@ function setSort(nextKey: 'proceeds' | 'fifo_pnl_realized'): void {
     sortOrder.value = 'desc'
   }
   state.page = 1
+  void loadTrades()
 }
 
 function onPageChange(event: { page: number; rows: number }): void {
   state.page = event.page + 1
   state.page_size = event.rows
+  void loadTrades()
 }
 
 function toneByNumber(value: number | null | undefined): 'positive' | 'negative' | 'neutral' {
@@ -216,20 +170,13 @@ onMounted(() => {
 
     <template v-else>
       <section class="stats-grid stats-grid--summary">
-        <StatCard title="成交笔数" :value="String(tradeSummary.trade_count)" icon="pi pi-list" tone="accent" />
-        <StatCard title="买入笔数" :value="String(tradeSummary.buy_count)" icon="pi pi-arrow-up" tone="positive" />
-        <StatCard title="卖出笔数" :value="String(tradeSummary.sell_count)" icon="pi pi-arrow-down" tone="negative" />
-        <StatCard title="总佣金" :value="formatNumber(tradeSummary.total_commission, 4)" icon="pi pi-minus-circle" :tone="toneByNumber(tradeSummary.total_commission)" />
-        <StatCard title="已实现盈亏" :value="formatNumber(tradeSummary.total_realized_pnl)" icon="pi pi-chart-line" :tone="toneByNumber(tradeSummary.total_realized_pnl)" />
-        <StatCard
-          v-for="item in tradeSummary.proceeds_by_currency"
-          :key="item.currency"
-          :title="`${item.currency} 成交净额`"
-          :value="formatNumber(item.amount)"
-          helper="按币种分组的 proceeds 净和"
-          icon="pi pi-chart-bar"
-          :tone="toneByNumber(item.amount)"
-        />
+        <StatCard title="成交笔数" :value="String(tradeSummary?.trade_count ?? 0)" icon="pi pi-list" tone="accent" />
+        <StatCard title="买入笔数" :value="String(tradeSummary?.buy_count ?? 0)" icon="pi pi-arrow-up" tone="positive" />
+        <StatCard title="卖出笔数" :value="String(tradeSummary?.sell_count ?? 0)" icon="pi pi-arrow-down" tone="negative" />
+        <StatCard title="交易标的数" :value="String(tradeSummary?.symbols_count ?? 0)" icon="pi pi-hashtag" tone="neutral" />
+        <StatCard title="总佣金" :value="formatNumber(tradeSummary?.total_commission ?? null, 4)" icon="pi pi-minus-circle" :tone="toneByNumber(tradeSummary?.total_commission)" />
+        <StatCard title="已实现盈亏" :value="formatNumber(tradeSummary?.total_realized_pnl ?? null)" icon="pi pi-chart-line" :tone="toneByNumber(tradeSummary?.total_realized_pnl)" />
+        <StatCard title="成交净额" :value="formatNumber(tradeSummary?.total_proceeds ?? null)" icon="pi pi-chart-bar" :tone="toneByNumber(tradeSummary?.total_proceeds)" />
       </section>
 
       <section class="surface-panel">
@@ -242,7 +189,7 @@ onMounted(() => {
           </div>
           <template v-if="tradeItems.length > 0">
             <TradeTable
-              :items="paginatedTrades"
+              :items="tradeItems"
               :format-number="formatNumber"
               :sort-key="sortKey"
               :sort-order="sortOrder"
@@ -250,7 +197,7 @@ onMounted(() => {
             />
             <Paginator
               :rows="state.page_size"
-              :totalRecords="sortedTrades.length"
+              :totalRecords="tradeResponse?.pagination.total ?? 0"
               :first="(state.page - 1) * state.page_size"
               :rowsPerPageOptions="[20, 50, 100]"
               @page="onPageChange"

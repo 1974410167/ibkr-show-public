@@ -22,6 +22,7 @@ CASH_FLOW_SORT_FIELDS = {
     "currency": "currency",
     "flow_direction": "flow_direction",
 }
+DEPOSIT_WITHDRAWAL_FLOW_TYPE = "Deposits/Withdrawals"
 
 
 class CashFlowService:
@@ -48,6 +49,7 @@ class CashFlowService:
                 effective_start.isoformat() if effective_start else None,
                 effective_end.isoformat() if effective_end else None,
             ),
+            {"term": {"flow_type": DEPOSIT_WITHDRAWAL_FLOW_TYPE}},
             build_term_filter("currency", currency),
             build_term_filter("flow_direction", flow_direction),
         ]
@@ -95,6 +97,7 @@ class CashFlowService:
                 effective_start.isoformat() if effective_start else None,
                 effective_end.isoformat() if effective_end else None,
             ),
+            {"term": {"flow_type": DEPOSIT_WITHDRAWAL_FLOW_TYPE}},
             build_term_filter("currency", currency),
             build_term_filter("flow_direction", flow_direction),
         ]

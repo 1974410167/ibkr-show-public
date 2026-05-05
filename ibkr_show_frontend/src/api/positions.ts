@@ -5,6 +5,7 @@ export interface PositionQuery {
   report_date?: string
   symbol?: string
   asset_class?: string
+  include_summary?: boolean
   sort_by?: string
   sort_order?: 'asc' | 'desc'
   page?: number

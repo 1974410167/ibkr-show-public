@@ -82,9 +82,10 @@ class TradeService:
         end_date: str | None,
         symbol: str | None,
         asset_class: str | None,
+        buy_sell: str | None,
     ) -> TradeSummaryResponse:
         effective_start, effective_end = self._resolve_date_window(start_date, end_date)
-        filters = self._build_filters(effective_start, effective_end, symbol, asset_class, None)
+        filters = self._build_filters(effective_start, effective_end, symbol, asset_class, buy_sell)
         response = self.es_client.search(
             index=self.settings.es_trade_index,
             body={
@@ -121,8 +122,9 @@ class TradeService:
         if parsed_start is None and parsed_end is None:
             return None, None
 
-        latest_trade_date = self._get_latest_trade_date()
-        effective_end = parsed_end or latest_trade_date
+        effective_end = parsed_end
+        if effective_end is None:
+            effective_end = self._get_latest_trade_date()
 
         return (
             parsed_start.isoformat() if parsed_start else None,

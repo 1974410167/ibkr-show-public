@@ -3,5 +3,6 @@ uvicorn[standard]
 python-dotenv
 pydantic
 elasticsearch>=8,<9
+redis
 pytest
 httpx

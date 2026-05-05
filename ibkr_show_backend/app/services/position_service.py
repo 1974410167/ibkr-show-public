@@ -1,3 +1,4 @@
+from app.clients.cache_client import RedisCacheClient
 from app.clients.es_client import ElasticsearchClient
 from app.core.config import Settings
 from app.schemas.positions import (
@@ -31,9 +32,15 @@ POSITION_SORT_FIELDS = {
 
 
 class PositionService:
-    def __init__(self, es_client: ElasticsearchClient, settings: Settings) -> None:
+    def __init__(
+        self,
+        es_client: ElasticsearchClient,
+        settings: Settings,
+        cache_client: RedisCacheClient | None = None,
+    ) -> None:
         self.es_client = es_client
         self.settings = settings
+        self.cache_client = cache_client
 
     def list_positions(
         self,
@@ -44,7 +51,25 @@ class PositionService:
         sort_order: str,
         page: int,
         page_size: int,
+        include_summary: bool = False,
     ) -> PositionListResponse:
+        cache_key = None
+        if include_summary and self.cache_client:
+            cache_key = self.cache_client.build_key(
+                "positions",
+                f"report_date={report_date or 'latest'}",
+                f"symbol={symbol or ''}",
+                f"asset_class={asset_class or ''}",
+                f"sort_by={sort_by}",
+                f"sort_order={sort_order}",
+                f"page={page}",
+                f"page_size={page_size}",
+                "include_summary=1",
+            )
+            cached = self.cache_client.get_json(cache_key)
+            if cached is not None:
+                return PositionListResponse(**cached)
+
         effective_report_date = report_date or self._get_latest_report_date()
         if effective_report_date is None:
             return PositionListResponse(items=[], pagination=build_pagination_info(page, page_size, 0))
@@ -78,16 +103,32 @@ class PositionService:
                 "previous_day_change_percent",
             ],
         )
+        if include_summary:
+            body["aggs"] = self._build_position_summary_aggs()
         response = self.es_client.search(index=self.settings.es_position_index, body=body)
         hits = response.get("hits", {})
         total = hits.get("total", {}).get("value", 0)
         documents = [dict(hit["_source"]) for hit in hits.get("hits", [])]
         self._apply_trade_realized_pnl(documents=documents, report_date=effective_report_date)
         items = [PositionItem(**document) for document in documents]
-        return PositionListResponse(
+        summary = (
+            self._build_positions_summary(
+                effective_report_date=effective_report_date,
+                documents=documents,
+                total_positions=total,
+                aggregations=response.get("aggregations", {}),
+            )
+            if include_summary
+            else None
+        )
+        result = PositionListResponse(
             items=items,
             pagination=build_pagination_info(page, min(page_size, 200), total),
+            summary=summary,
         )
+        if cache_key and self.cache_client:
+            self.cache_client.set_json(cache_key, result.model_dump())
+        return result
 
     def get_positions_summary(
         self,
@@ -108,7 +149,7 @@ class PositionService:
             filters=[item for item in filters if item],
             sort=[{"position_value": {"order": "desc", "missing": "_last"}}],
             page=1,
-            page_size=200,
+            page_size=5,
             source_fields=[
                 "report_date",
                 "symbol",
@@ -116,60 +157,17 @@ class PositionService:
                 "asset_class",
                 "position_value",
                 "percent_of_nav",
-                "cost_basis_money",
-                "total_realized_pnl",
-                "total_unrealized_pnl",
-                "total_fifo_pnl",
             ],
         )
+        body["aggs"] = self._build_position_summary_aggs()
         response = self.es_client.search(index=self.settings.es_position_index, body=body)
         hits = response.get("hits", {}).get("hits", [])
         documents = [dict(hit["_source"]) for hit in hits]
-        self._apply_trade_realized_pnl(documents=documents, report_date=effective_report_date)
-
-        def sum_field(field: str) -> float:
-            return sum(float(item.get(field) or 0.0) for item in documents)
-
-        top_positions = [
-            PositionConcentrationItem(
-                symbol=item.get("symbol"),
-                description=item.get("description"),
-                asset_class=item.get("asset_class"),
-                position_value=float(item.get("position_value") or 0.0),
-                percent_of_nav=item.get("percent_of_nav"),
-            )
-            for item in documents[:5]
-        ]
-
-        distribution: dict[str, dict[str, float | int | None]] = {}
-        for item in documents:
-            asset_key = item.get("asset_class") or "UNKNOWN"
-            bucket = distribution.setdefault(
-                asset_key,
-                {"asset_class": item.get("asset_class"), "position_value": 0.0, "positions_count": 0},
-            )
-            bucket["position_value"] = float(bucket["position_value"]) + float(item.get("position_value") or 0.0)
-            bucket["positions_count"] = int(bucket["positions_count"]) + 1
-
-        asset_distribution = [
-            PositionAssetDistributionItem(
-                asset_class=value["asset_class"],
-                position_value=float(value["position_value"]),
-                positions_count=int(value["positions_count"]),
-            )
-            for value in sorted(distribution.values(), key=lambda item: float(item["position_value"]), reverse=True)
-        ]
-
-        return PositionSummaryResponse(
-            report_date=effective_report_date,
-            total_positions=len(documents),
-            total_position_value=sum_field("position_value"),
-            total_cost_basis_money=sum_field("cost_basis_money"),
-            total_realized_pnl=sum_field("total_realized_pnl"),
-            total_unrealized_pnl=sum_field("total_unrealized_pnl"),
-            total_fifo_pnl=sum_field("total_fifo_pnl"),
-            top_positions=top_positions,
-            asset_distribution=asset_distribution,
+        return self._build_positions_summary(
+            effective_report_date=effective_report_date,
+            documents=documents,
+            total_positions=response.get("hits", {}).get("total", {}).get("value", 0),
+            aggregations=response.get("aggregations", {}),
         )
 
     def get_position_detail(
@@ -236,9 +234,17 @@ class PositionService:
             ],
         )
 
-        price_hits = self.es_client.search(index=self.settings.es_price_history_index, body=price_body).get("hits", {}).get("hits", [])
-        position_hits = self.es_client.search(index=self.settings.es_position_index, body=position_body).get("hits", {}).get("hits", [])
-        trade_hits = self.es_client.search(index=self.settings.es_trade_index, body=trade_body).get("hits", {}).get("hits", [])
+        price_response, position_response, trade_response = self.es_client.multi_search(
+            [
+                (self.settings.es_price_history_index, price_body),
+                (self.settings.es_position_index, position_body),
+                (self.settings.es_trade_index, trade_body),
+            ]
+        )
+
+        price_hits = price_response.get("hits", {}).get("hits", [])
+        position_hits = position_response.get("hits", {}).get("hits", [])
+        trade_hits = trade_response.get("hits", {}).get("hits", [])
 
         price_docs = [hit["_source"] for hit in price_hits]
         position_docs = [hit["_source"] for hit in position_hits]
@@ -346,8 +352,23 @@ class PositionService:
         return hits[0]["_source"]["report_date"]
 
     def _apply_trade_realized_pnl(self, documents: list[dict], report_date: str) -> None:
-        realized_lookup = self._fetch_trade_realized_pnl_lookup(documents=documents, report_date=report_date)
+        missing_documents: list[dict] = []
         for document in documents:
+            if document.get("total_realized_pnl") is None:
+                missing_documents.append(document)
+                continue
+
+            if document.get("realized_pnl_percent") is None:
+                document["realized_pnl_percent"] = self._calculate_percentage(
+                    float(document.get("total_realized_pnl") or 0.0),
+                    document.get("cost_basis_money"),
+                )
+
+        if not missing_documents:
+            return
+
+        realized_lookup = self._fetch_trade_realized_pnl_lookup(documents=missing_documents, report_date=report_date)
+        for document in missing_documents:
             realized_pnl = realized_lookup.get(
                 (
                     str(document.get("account_id") or ""),
@@ -440,6 +461,60 @@ class PositionService:
                 break
 
         return lookup
+
+    def _build_position_summary_aggs(self) -> dict:
+        return {
+            "total_position_value": {"sum": {"field": "position_value"}},
+            "total_cost_basis_money": {"sum": {"field": "cost_basis_money"}},
+            "total_realized_pnl": {"sum": {"field": "total_realized_pnl"}},
+            "total_unrealized_pnl": {"sum": {"field": "total_unrealized_pnl"}},
+            "total_fifo_pnl": {"sum": {"field": "total_fifo_pnl"}},
+            "asset_distribution": {
+                "terms": {"field": "asset_class", "size": 20, "missing": "UNKNOWN"},
+                "aggs": {
+                    "position_value": {"sum": {"field": "position_value"}},
+                },
+            },
+        }
+
+    def _build_positions_summary(
+        self,
+        effective_report_date: str,
+        documents: list[dict],
+        total_positions: int,
+        aggregations: dict,
+    ) -> PositionSummaryResponse:
+        top_positions = [
+            PositionConcentrationItem(
+                symbol=item.get("symbol"),
+                description=item.get("description"),
+                asset_class=item.get("asset_class"),
+                position_value=float(item.get("position_value") or 0.0),
+                percent_of_nav=item.get("percent_of_nav"),
+            )
+            for item in documents[:5]
+        ]
+
+        asset_distribution = [
+            PositionAssetDistributionItem(
+                asset_class=(bucket.get("key") if bucket.get("key") != "UNKNOWN" else None),
+                position_value=float(bucket.get("position_value", {}).get("value") or 0.0),
+                positions_count=int(bucket.get("doc_count") or 0),
+            )
+            for bucket in aggregations.get("asset_distribution", {}).get("buckets", [])
+        ]
+
+        return PositionSummaryResponse(
+            report_date=effective_report_date,
+            total_positions=total_positions,
+            total_position_value=float(aggregations.get("total_position_value", {}).get("value") or 0.0),
+            total_cost_basis_money=float(aggregations.get("total_cost_basis_money", {}).get("value") or 0.0),
+            total_realized_pnl=float(aggregations.get("total_realized_pnl", {}).get("value") or 0.0),
+            total_unrealized_pnl=float(aggregations.get("total_unrealized_pnl", {}).get("value") or 0.0),
+            total_fifo_pnl=float(aggregations.get("total_fifo_pnl", {}).get("value") or 0.0),
+            top_positions=top_positions,
+            asset_distribution=asset_distribution,
+        )
 
     @staticmethod
     def _calculate_percentage(numerator: float | None, denominator: float | None) -> float | None:

@@ -17,6 +17,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 
 import type { EquityCurvePoint } from '@/types/charts'
+import type { EquityCurveRangeKey, EquityCurveRangeOption } from '@/views/equityCurveRange'
 
 use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer])
 
@@ -30,7 +31,15 @@ type CurveChartOption = ComposeOption<
 
 const props = defineProps<{
   items: EquityCurvePoint[]
+  loading: boolean
+  errorMessage: string
   formatNumber: (value: number | null, digits?: number) => string
+  rangeOptions: EquityCurveRangeOption[]
+  selectedRange: EquityCurveRangeKey
+}>()
+
+const emit = defineEmits<{
+  selectRange: [range: EquityCurveRangeKey]
 }>()
 
 const chartRef = ref<HTMLDivElement | null>(null)
@@ -111,6 +120,10 @@ function seriesAreaOpacity(key: 'total_equity' | 'total_pnl' | 'net_cost' | 'rea
 
 function toggleSeriesFocus(key: 'total_equity' | 'total_pnl' | 'net_cost' | 'realized_pnl'): void {
   activeSeriesKey.value = activeSeriesKey.value === key ? null : key
+}
+
+function selectRange(range: EquityCurveRangeKey): void {
+  emit('selectRange', range)
 }
 
 function buildSeriesData(field: 'total_equity' | 'total_pnl' | 'net_cost' | 'realized_pnl'): Array<[string, number]> {
@@ -412,9 +425,27 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div v-if="items.length === 0" class="empty-state">暂无曲线数据</div>
+        <div class="curve-range-switcher" aria-label="Curve range presets">
+          <button
+            v-for="option in rangeOptions"
+            :key="option.key"
+            type="button"
+            class="curve-range-button"
+            :class="{ 'curve-range-button--active': selectedRange === option.key }"
+            @click="selectRange(option.key)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+
+        <div v-if="items.length === 0" class="empty-state">
+          {{ errorMessage || '暂无曲线数据' }}
+        </div>
 
         <div v-else class="curve-panel__body">
+          <div v-if="loading" class="curve-panel__loading-mask" aria-live="polite">正在更新曲线…</div>
+          <div v-else-if="errorMessage" class="curve-panel__inline-error">{{ errorMessage }}</div>
+
           <div class="curve-series-switcher" aria-label="Curve focus toggles">
             <button
               v-for="item in seriesControls"
@@ -466,6 +497,61 @@ onUnmounted(() => {
 .curve-panel__body {
   display: grid;
   gap: var(--space-4);
+  position: relative;
+}
+
+.curve-range-switcher {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.curve-range-button {
+  border: 1px solid rgba(129, 160, 207, 0.12);
+  background: rgba(15, 26, 45, 0.72);
+  color: var(--color-text-secondary);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.curve-range-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(86, 213, 255, 0.24);
+  color: var(--color-text-primary);
+}
+
+.curve-panel__loading-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(86, 213, 255, 0.16);
+  border-radius: 24px;
+  background: rgba(5, 12, 24, 0.44);
+  backdrop-filter: blur(3px);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.curve-panel__inline-error {
+  color: #ff9eb2;
+  font-size: 0.95rem;
+}
+
+.curve-range-button--active {
+  background: linear-gradient(135deg, rgba(34, 99, 196, 0.96), rgba(18, 59, 128, 0.96));
+  border-color: rgba(116, 194, 255, 0.45);
+  color: #f4f8ff;
+  box-shadow: 0 12px 28px rgba(2, 10, 24, 0.18);
 }
 
 .curve-series-switcher {

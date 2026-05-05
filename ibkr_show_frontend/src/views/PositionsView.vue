@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import Dialog from 'primevue/dialog'
 
-import { fetchAccountOverview, fetchLatestReportDate } from '@/api/account'
-import { fetchPositionDetail, fetchPositions, fetchPositionSummary } from '@/api/positions'
+import { fetchPositionDetail, fetchPositions } from '@/api/positions'
+import { useAccountOverviewData } from '@/composables/accountOverview'
 import ErrorBlock from '@/components/ErrorBlock.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import PositionDetailChart from '@/components/PositionDetailChart.vue'
@@ -12,6 +12,7 @@ import PositionTable from '@/components/PositionTable.vue'
 import type { AccountOverview } from '@/types/account'
 import type { PositionDetailResponse, PositionItem, PositionListResponse, PositionSummaryResponse } from '@/types/positions'
 
+const { overview: sharedOverview, ensureLoaded: ensureOverviewLoaded } = useAccountOverviewData()
 const reportDate = ref('')
 const response = ref<PositionListResponse | null>(null)
 const summary = ref<PositionSummaryResponse | null>(null)
@@ -44,22 +45,20 @@ async function loadPositions(): Promise<void> {
   errorMessage.value = ''
 
   try {
-    const [summaryResponse, listResponse, overviewResponse] = await Promise.all([
-      fetchPositionSummary({
-        report_date: reportDate.value,
-      }),
+    const [listResponse] = await Promise.all([
       fetchPositions({
         report_date: reportDate.value,
+        include_summary: true,
         sort_by: 'position_value',
         sort_order: 'desc',
         page: 1,
         page_size: 200,
       }),
-      fetchAccountOverview(),
+      ensureOverviewLoaded(),
     ])
-    summary.value = summaryResponse
+    summary.value = listResponse.summary
     response.value = listResponse
-    overview.value = overviewResponse
+    overview.value = sharedOverview.value
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载持仓失败'
   } finally {
@@ -68,12 +67,6 @@ async function loadPositions(): Promise<void> {
 }
 
 async function initialize(): Promise<void> {
-  try {
-    const latest = await fetchLatestReportDate()
-    reportDate.value = latest.report_date
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '获取最新交易日失败'
-  }
   await loadPositions()
 }
 

@@ -1,164 +1,90 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { fetchAccountOverview } from '@/api/account'
 import { fetchEquityCurve } from '@/api/charts'
+import { useAccountOverviewData } from '@/composables/accountOverview'
 import EquityCurveSimple from '@/components/EquityCurveSimple.vue'
 import ErrorBlock from '@/components/ErrorBlock.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import PerformanceCalendar from '@/components/PerformanceCalendar.vue'
 import StatCard from '@/components/StatCard.vue'
-import type { AccountDeltaMetric, AccountOverview } from '@/types/account'
 import type { EquityCurvePoint } from '@/types/charts'
+import { buildDashboardStatCards, formatMetricNumber as formatNumber } from '@/views/dashboardMetrics'
+import {
+  buildEquityCurveRangeParams,
+  EQUITY_CURVE_RANGE_OPTIONS,
+  type EquityCurveRangeKey,
+} from '@/views/equityCurveRange'
 
-const overview = ref<AccountOverview | null>(null)
+const { overview, ensureLoaded } = useAccountOverviewData()
 const curveItems = ref<EquityCurvePoint[]>([])
-const loading = ref(true)
-const errorMessage = ref('')
+const pageLoading = ref(true)
+const pageErrorMessage = ref('')
+const curveLoading = ref(false)
+const curveErrorMessage = ref('')
+const selectedRange = ref<EquityCurveRangeKey>('ytd')
 let refreshTimer: number | null = null
-
-function formatNumber(value: number | null, digits = 2): string {
-  if (value === null) {
-    return '--'
-  }
-
-  return new Intl.NumberFormat('zh-CN', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(value)
-}
-
-function formatPercent(value: number | null): string {
-  if (value === null) {
-    return '--'
-  }
-  return `${formatNumber(value, 2)}%`
-}
-
-function formatSignedNumber(value: number | null, digits = 2): string {
-  if (value === null) {
-    return ''
-  }
-  const prefix = value > 0 ? '+' : ''
-  return `${prefix}${formatNumber(value, digits)}`
-}
-
-function formatSignedPercent(value: number | null): string {
-  if (value === null) {
-    return ''
-  }
-  const prefix = value > 0 ? '+' : ''
-  return `${prefix}${formatNumber(value, 2)}%`
-}
-
-function deltaTone(metric: AccountDeltaMetric | null): 'neutral' | 'positive' | 'negative' | 'accent' {
-  if (!metric || !metric.amount_change) {
-    return 'neutral'
-  }
-  return metric.amount_change > 0 ? 'positive' : 'negative'
-}
-
-function metricTone(value: number | null, fallback: 'neutral' | 'accent' = 'neutral'): 'neutral' | 'positive' | 'negative' | 'accent' {
-  if (value === null || value === 0) {
-    return fallback
-  }
-  return value > 0 ? 'positive' : 'negative'
-}
 
 const statCards = computed(() => {
   if (!overview.value) {
     return []
   }
 
-  return [
-    {
-      title: '总权益',
-      value: formatNumber(overview.value.total_equity),
-      helper: overview.value.report_date,
-      icon: 'pi pi-wallet',
-      tone: 'accent' as const,
-      deltaAmount: formatSignedNumber(overview.value.total_equity_delta?.amount_change ?? null),
-      deltaPercent: formatSignedPercent(overview.value.total_equity_delta?.percent_change ?? null),
-      deltaTone: deltaTone(overview.value.total_equity_delta),
-    },
-    { title: '现金', value: formatNumber(overview.value.cash), icon: 'pi pi-dollar', tone: 'neutral' as const },
-    { title: '股票市值', value: formatNumber(overview.value.stock_value), icon: 'pi pi-chart-bar', tone: 'neutral' as const },
-    {
-      title: '已实现盈亏',
-      value: formatNumber(overview.value.fifo_total_realized_pnl),
-      icon: 'pi pi-check-circle',
-      tone: overview.value.fifo_total_realized_pnl !== null && overview.value.fifo_total_realized_pnl < 0 ? 'negative' as const : 'positive' as const,
-      deltaAmount: formatSignedNumber(overview.value.fifo_total_realized_pnl_delta?.amount_change ?? null),
-      deltaPercent: formatSignedPercent(overview.value.fifo_total_realized_pnl_delta?.percent_change ?? null),
-      deltaTone: deltaTone(overview.value.fifo_total_realized_pnl_delta),
-    },
-    {
-      title: '未实现盈亏',
-      value: formatNumber(overview.value.fifo_total_unrealized_pnl),
-      icon: 'pi pi-bolt',
-      tone: overview.value.fifo_total_unrealized_pnl !== null && overview.value.fifo_total_unrealized_pnl < 0 ? 'negative' as const : 'positive' as const,
-      deltaAmount: formatSignedNumber(overview.value.fifo_total_unrealized_pnl_delta?.amount_change ?? null),
-      deltaPercent: formatSignedPercent(overview.value.fifo_total_unrealized_pnl_delta?.percent_change ?? null),
-      deltaTone: deltaTone(overview.value.fifo_total_unrealized_pnl_delta),
-    },
-    {
-      title: '总盈亏',
-      value: formatNumber(overview.value.fifo_total_pnl),
-      icon: 'pi pi-chart-line',
-      tone: overview.value.fifo_total_pnl !== null && overview.value.fifo_total_pnl < 0 ? 'negative' as const : 'positive' as const,
-      deltaAmount: formatSignedNumber(overview.value.fifo_total_pnl_delta?.amount_change ?? null),
-      deltaPercent: formatSignedPercent(overview.value.fifo_total_pnl_delta?.percent_change ?? null),
-      deltaTone: deltaTone(overview.value.fifo_total_pnl_delta),
-    },
-    {
-      title: '当日TWR',
-      value: formatPercent(overview.value.cnav_twr),
-      helper: 'IBKR CNAV 单日收益率',
-      icon: 'pi pi-percentage',
-      tone: metricTone(overview.value.cnav_twr, 'accent'),
-    },
-    {
-      title: '年初至今TWR',
-      value: formatPercent(overview.value.ytd_twr),
-      helper: `${overview.value.report_date.slice(0, 4)}-01-01 至今`,
-      icon: 'pi pi-calendar',
-      tone: metricTone(overview.value.ytd_twr, 'accent'),
-    },
-    { title: '年内分红', value: formatNumber(overview.value.crtt_dividends_ytd), icon: 'pi pi-briefcase', tone: 'neutral' as const },
-    { title: '年内利息', value: formatNumber(overview.value.crtt_broker_interest_ytd), icon: 'pi pi-chart-line', tone: 'neutral' as const },
-    { title: '年内佣金', value: formatNumber(overview.value.crtt_commissions_ytd), icon: 'pi pi-minus-circle', tone: 'negative' as const },
-  ]
+  return buildDashboardStatCards(overview.value)
 })
 
 async function loadDashboard(): Promise<void> {
-  await loadDashboardData(true)
-}
-
-async function loadDashboardData(showLoading: boolean): Promise<void> {
-  if (showLoading) {
-    loading.value = true
-  }
-  errorMessage.value = ''
+  pageLoading.value = true
+  pageErrorMessage.value = ''
 
   try {
-    const [overviewResponse, curveResponse] = await Promise.all([
-      fetchAccountOverview(),
-      fetchEquityCurve(),
-    ])
-    overview.value = overviewResponse
+    await ensureLoaded()
+    await loadCurveData(false)
+  } catch (error) {
+    pageErrorMessage.value = error instanceof Error ? error.message : '加载总览失败'
+  } finally {
+    pageLoading.value = false
+  }
+}
+
+async function loadCurveData(showLoading: boolean, forceOverviewRefresh = false): Promise<void> {
+  if (showLoading) {
+    curveLoading.value = true
+  }
+  curveErrorMessage.value = ''
+  try {
+    if (forceOverviewRefresh) {
+      await ensureLoaded(true)
+    } else if (!overview.value) {
+      await ensureLoaded()
+    }
+    const curveResponse = await fetchEquityCurve(
+      buildEquityCurveRangeParams(overview.value?.report_date, selectedRange.value),
+    )
     curveItems.value = curveResponse.items
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '加载总览失败'
+    curveErrorMessage.value = error instanceof Error ? error.message : '加载权益曲线失败'
+    if (curveItems.value.length === 0) {
+      throw error
+    }
   } finally {
     if (showLoading) {
-      loading.value = false
+      curveLoading.value = false
     }
   }
+}
+
+function setCurveRange(nextRange: EquityCurveRangeKey): void {
+  if (selectedRange.value === nextRange) {
+    return
+  }
+  selectedRange.value = nextRange
+  void loadCurveData(true)
 }
 
 onMounted(() => {
   void loadDashboard()
   refreshTimer = window.setInterval(() => {
-    void loadDashboardData(false)
+    void loadCurveData(false, true)
   }, 30000)
 })
 
@@ -171,8 +97,8 @@ onUnmounted(() => {
 
 <template>
   <section class="page-section">
-    <LoadingBlock v-if="loading" />
-    <ErrorBlock v-else-if="errorMessage" :message="errorMessage" />
+    <LoadingBlock v-if="pageLoading" />
+    <ErrorBlock v-else-if="pageErrorMessage" :message="pageErrorMessage" />
 
     <template v-else>
       <section class="surface-panel dashboard-metrics-panel">
@@ -194,8 +120,16 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <EquityCurveSimple :items="curveItems" :format-number="formatNumber" />
-      <PerformanceCalendar :items="curveItems" />
+      <EquityCurveSimple
+        :items="curveItems"
+        :loading="curveLoading"
+        :error-message="curveErrorMessage"
+        :format-number="formatNumber"
+        :range-options="EQUITY_CURVE_RANGE_OPTIONS"
+        :selected-range="selectedRange"
+        @select-range="setCurveRange"
+      />
+      <PerformanceCalendar :latest-report-date="overview?.report_date ?? null" />
     </template>
   </section>
 </template>

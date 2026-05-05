@@ -23,6 +23,7 @@ export interface PositionItem {
 export interface PositionListResponse {
   items: PositionItem[]
   pagination: PaginationInfo
+  summary: PositionSummaryResponse | null
 }
 
 export interface PositionConcentrationItem {

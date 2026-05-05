@@ -1,12 +1,19 @@
+from app.clients.cache_client import RedisCacheClient
 from app.clients.es_client import ElasticsearchClient
 from app.core.config import Settings
 from app.schemas.account import AccountDeltaMetric, AccountOverviewResponse, LatestReportDateResponse
 
 
 class AccountService:
-    def __init__(self, es_client: ElasticsearchClient, settings: Settings) -> None:
+    def __init__(
+        self,
+        es_client: ElasticsearchClient,
+        settings: Settings,
+        cache_client: RedisCacheClient | None = None,
+    ) -> None:
         self.es_client = es_client
         self.settings = settings
+        self.cache_client = cache_client
 
     def get_latest_report_date(self) -> LatestReportDateResponse | None:
         response = self.es_client.search(
@@ -24,6 +31,12 @@ class AccountService:
         return LatestReportDateResponse(report_date=source["report_date"])
 
     def get_overview(self) -> AccountOverviewResponse | None:
+        cache_key = self.cache_client.build_key("account-overview") if self.cache_client else None
+        if cache_key and self.cache_client:
+            cached = self.cache_client.get_json(cache_key)
+            if cached is not None:
+                return AccountOverviewResponse(**cached)
+
         response = self.es_client.search(
             index=self.settings.es_account_index,
             body={
@@ -59,19 +72,23 @@ class AccountService:
         account_id = overview_source["account_id"]
         report_date = overview_source["report_date"]
 
-        total_realized_pnl = self._get_total_realized_pnl(account_id, report_date)
-        total_unrealized_pnl = self._get_total_unrealized_pnl(account_id, report_date)
+        previous_source = dict(hits[1]["_source"]) if len(hits) > 1 else None
+        overview_metrics = self._get_overview_metrics(
+            account_id=account_id,
+            report_date=report_date,
+            previous_report_date=previous_source["report_date"] if previous_source is not None else None,
+        )
 
+        total_realized_pnl = overview_metrics["current_realized_pnl"]
+        total_unrealized_pnl = overview_metrics["current_unrealized_pnl"]
         overview_source["fifo_total_realized_pnl"] = total_realized_pnl
         overview_source["fifo_total_unrealized_pnl"] = total_unrealized_pnl
         overview_source["fifo_total_pnl"] = total_realized_pnl + total_unrealized_pnl
-        overview_source["ytd_twr"] = self._get_ytd_twr(account_id, report_date)
+        overview_source["ytd_twr"] = overview_metrics["ytd_twr"]
 
-        previous_source = dict(hits[1]["_source"]) if len(hits) > 1 else None
         if previous_source is not None:
-            previous_report_date = previous_source["report_date"]
-            previous_total_realized_pnl = self._get_total_realized_pnl(account_id, previous_report_date)
-            previous_total_unrealized_pnl = self._get_total_unrealized_pnl(account_id, previous_report_date)
+            previous_total_realized_pnl = overview_metrics["previous_realized_pnl"]
+            previous_total_unrealized_pnl = overview_metrics["previous_unrealized_pnl"]
             previous_total_pnl = previous_total_realized_pnl + previous_total_unrealized_pnl
 
             overview_source["total_equity_delta"] = self._build_delta_metric(
@@ -91,27 +108,130 @@ class AccountService:
                 previous_total_pnl,
             )
 
-        return AccountOverviewResponse(**overview_source)
+        overview = AccountOverviewResponse(**overview_source)
+        if cache_key and self.cache_client:
+            self.cache_client.set_json(cache_key, overview.model_dump())
+        return overview
 
-    def _get_ytd_twr(self, account_id: str, report_date: str) -> float | None:
+    def _get_overview_metrics(
+        self,
+        *,
+        account_id: str,
+        report_date: str,
+        previous_report_date: str | None,
+    ) -> dict[str, float | None]:
         report_year = report_date[:4]
-        response = self.es_client.search(
-            index=self.settings.es_account_index,
-            body={
-                "size": 2000,
-                "query": {
-                    "bool": {
-                        "filter": [
-                            {"term": {"account_id": account_id}},
-                            {"range": {"report_date": {"gte": f"{report_year}-01-01", "lte": report_date}}},
-                        ]
-                    }
+        searches: list[tuple[str, dict]] = [
+            (
+                self.settings.es_trade_index,
+                {
+                    "size": 0,
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"account_id": account_id}},
+                                {"range": {"trade_date": {"lte": report_date}}},
+                            ]
+                        }
+                    },
+                    "aggs": {"total_realized_pnl": {"sum": {"field": "fifo_pnl_realized"}}},
                 },
-                "sort": [{"report_date": {"order": "asc"}}],
-                "_source": ["report_date", "cnav_twr"],
-            },
-        )
+            ),
+            (
+                self.settings.es_position_index,
+                {
+                    "size": 0,
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"account_id": account_id}},
+                                {"term": {"report_date": report_date}},
+                            ]
+                        }
+                    },
+                    "aggs": {"total_unrealized_pnl": {"sum": {"field": "total_unrealized_pnl"}}},
+                },
+            ),
+            (
+                self.settings.es_account_index,
+                {
+                    "size": 2000,
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"account_id": account_id}},
+                                {"range": {"report_date": {"gte": f"{report_year}-01-01", "lte": report_date}}},
+                            ]
+                        }
+                    },
+                    "sort": [{"report_date": {"order": "asc"}}],
+                    "_source": ["report_date", "cnav_twr"],
+                },
+            ),
+        ]
 
+        if previous_report_date is not None:
+            searches.extend(
+                [
+                    (
+                        self.settings.es_trade_index,
+                        {
+                            "size": 0,
+                            "query": {
+                                "bool": {
+                                    "filter": [
+                                        {"term": {"account_id": account_id}},
+                                        {"range": {"trade_date": {"lte": previous_report_date}}},
+                                    ]
+                                }
+                            },
+                            "aggs": {"total_realized_pnl": {"sum": {"field": "fifo_pnl_realized"}}},
+                        },
+                    ),
+                    (
+                        self.settings.es_position_index,
+                        {
+                            "size": 0,
+                            "query": {
+                                "bool": {
+                                    "filter": [
+                                        {"term": {"account_id": account_id}},
+                                        {"term": {"report_date": previous_report_date}},
+                                    ]
+                                }
+                            },
+                            "aggs": {"total_unrealized_pnl": {"sum": {"field": "total_unrealized_pnl"}}},
+                        },
+                    ),
+                ]
+            )
+
+        responses = self.es_client.multi_search(searches)
+        current_realized_response = responses[0]
+        current_unrealized_response = responses[1]
+        ytd_twr_response = responses[2]
+        previous_realized_response = responses[3] if previous_report_date is not None else None
+        previous_unrealized_response = responses[4] if previous_report_date is not None else None
+
+        return {
+            "current_realized_pnl": self._extract_sum_aggregation(current_realized_response, "total_realized_pnl"),
+            "current_unrealized_pnl": self._extract_sum_aggregation(current_unrealized_response, "total_unrealized_pnl"),
+            "ytd_twr": self._extract_ytd_twr(ytd_twr_response),
+            "previous_realized_pnl": self._extract_sum_aggregation(previous_realized_response, "total_realized_pnl"),
+            "previous_unrealized_pnl": self._extract_sum_aggregation(
+                previous_unrealized_response,
+                "total_unrealized_pnl",
+            ),
+        }
+
+    @staticmethod
+    def _extract_sum_aggregation(response: dict | None, aggregation_name: str) -> float:
+        if response is None:
+            return 0.0
+        return float(response.get("aggregations", {}).get(aggregation_name, {}).get("value") or 0.0)
+
+    @staticmethod
+    def _extract_ytd_twr(response: dict) -> float | None:
         twr_values = [
             float(hit["_source"]["cnav_twr"])
             for hit in response.get("hits", {}).get("hits", [])
@@ -125,50 +245,6 @@ class AccountService:
             cumulative_return *= 1.0 + daily_twr / 100.0
 
         return (cumulative_return - 1.0) * 100.0
-
-    def _get_total_realized_pnl(self, account_id: str, report_date: str) -> float:
-        response = self.es_client.search(
-            index=self.settings.es_trade_index,
-            body={
-                "size": 0,
-                "query": {
-                    "bool": {
-                        "filter": [
-                            {"term": {"account_id": account_id}},
-                            {"range": {"trade_date": {"lte": report_date}}},
-                        ]
-                    }
-                },
-                "aggs": {
-                    "total_realized_pnl": {
-                        "sum": {"field": "fifo_pnl_realized"}
-                    }
-                },
-            },
-        )
-        return float(response.get("aggregations", {}).get("total_realized_pnl", {}).get("value") or 0.0)
-
-    def _get_total_unrealized_pnl(self, account_id: str, report_date: str) -> float:
-        response = self.es_client.search(
-            index=self.settings.es_position_index,
-            body={
-                "size": 0,
-                "query": {
-                    "bool": {
-                        "filter": [
-                            {"term": {"account_id": account_id}},
-                            {"term": {"report_date": report_date}},
-                        ]
-                    }
-                },
-                "aggs": {
-                    "total_unrealized_pnl": {
-                        "sum": {"field": "total_unrealized_pnl"}
-                    }
-                },
-            },
-        )
-        return float(response.get("aggregations", {}).get("total_unrealized_pnl", {}).get("value") or 0.0)
 
     def _build_delta_metric(
         self,

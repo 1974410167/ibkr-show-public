@@ -2,4 +2,5 @@ apscheduler
 elasticsearch>=8,<9
 pytest
 python-dotenv
+redis
 requests

@@ -65,3 +65,14 @@ def test_summarize_cash_flows_groups_amounts_by_currency() -> None:
     assert summary.by_currency[1].net_amount == -40.0
 
     assert es_client.calls[0]["index"] == "cash-flow-index"
+    assert {"term": {"flow_type": "Deposits/Withdrawals"}} in es_client.calls[0]["body"]["query"]["bool"]["filter"]
+
+
+def test_list_cash_flows_only_queries_deposit_withdrawal_records() -> None:
+    es_client = StubESClient({"hits": {"total": {"value": 0}, "hits": []}})
+
+    service = CashFlowService(es_client, DummySettings())
+    response = service.list_cash_flows(None, None, None, None, "date_time", "desc", 1, 20)
+
+    assert response.items == []
+    assert {"term": {"flow_type": "Deposits/Withdrawals"}} in es_client.calls[0]["body"]["query"]["bool"]["filter"]

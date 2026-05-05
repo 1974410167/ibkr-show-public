@@ -13,6 +13,7 @@ def list_positions(
     report_date: str | None = Query(default=None),
     symbol: str | None = Query(default=None),
     asset_class: str | None = Query(default=None),
+    include_summary: bool = Query(default=False),
     sort_by: str = Query(default="position_value"),
     sort_order: str = Query(default="desc"),
     page: int = Query(default=1, ge=1),
@@ -28,6 +29,7 @@ def list_positions(
             sort_order=sort_order,
             page=page,
             page_size=page_size,
+            include_summary=include_summary,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

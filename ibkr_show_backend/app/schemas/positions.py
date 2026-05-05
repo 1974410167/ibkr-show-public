@@ -23,11 +23,6 @@ class PositionItem(BaseModel):
     previous_day_change_percent: float | None = None
 
 
-class PositionListResponse(BaseModel):
-    items: list[PositionItem]
-    pagination: PaginationInfo
-
-
 class PositionDetailBar(BaseModel):
     report_date: str
     open_price: float | None = None
@@ -78,3 +73,9 @@ class PositionSummaryResponse(BaseModel):
     total_fifo_pnl: float = 0.0
     top_positions: list[PositionConcentrationItem]
     asset_distribution: list[PositionAssetDistributionItem]
+
+
+class PositionListResponse(BaseModel):
+    items: list[PositionItem]
+    pagination: PaginationInfo
+    summary: PositionSummaryResponse | None = None
