@@ -21,6 +21,26 @@ IBKR 个人账户可视化与 AI 分析工具。把 IBKR Flex Query / 历史 CSV
 - Email SMTP 配置
 - 系统状态页 — `/admin/system` 聚合 10 个组件健康检查
 
+## 界面预览
+
+> 截图来自线上环境，已对用户名、日期、金额、代码和运行 ID 做脱敏处理，仅用于展示页面形态。
+
+| 账户总览 | 持仓分析 |
+|----------|----------|
+| ![账户总览](docs/screenshots/readme/dashboard.png) | ![持仓分析](docs/screenshots/readme/positions.png) |
+
+| 交易记录 | 出入金 |
+|----------|--------|
+| ![交易记录](docs/screenshots/readme/trades.png) | ![出入金](docs/screenshots/readme/cash-flows.png) |
+
+| 股息 | AI 决策 |
+|------|---------|
+| ![股息](docs/screenshots/readme/dividends.png) | ![AI 决策](docs/screenshots/readme/trade-decision.png) |
+
+| AI 复盘 | 账户 Copilot |
+|---------|--------------|
+| ![AI 复盘](docs/screenshots/readme/trade-review.png) | ![账户 Copilot](docs/screenshots/readme/account-copilot.png) |
+
 ## 快速开始
 
 ```bash
