@@ -18,6 +18,8 @@ check() {
     ':!SECURITY.md' \
     ':!README.md' \
     ':!CONTRIBUTING.md' \
+    ':!AGENTS.md' \
+    ':!CLAUDE.md' \
     2>/dev/null || true)"
 
   if [ -n "$matches" ]; then
