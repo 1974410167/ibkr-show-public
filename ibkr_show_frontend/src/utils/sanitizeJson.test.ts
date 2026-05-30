@@ -58,6 +58,22 @@ describe('sanitizeJsonValue', () => {
     })
   })
 
+  it('redacts reasoning and thinking fields', () => {
+    const result = sanitizeJsonValue({
+      reasoning: 'internal chain',
+      thinking: 'step by step',
+      chain_of_thought: 'because...',
+      output: 'visible',
+    })
+
+    expect(result).toEqual({
+      reasoning: '***',
+      thinking: '***',
+      chain_of_thought: '***',
+      output: 'visible',
+    })
+  })
+
   it('recursively sanitizes nested objects and arrays without hiding usage tokens', () => {
     const result = sanitizeJsonValue({
       usage: { total_tokens: 120, access_token: 'abc' },

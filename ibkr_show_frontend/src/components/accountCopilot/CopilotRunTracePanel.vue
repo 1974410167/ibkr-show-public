@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import Tag from 'primevue/tag'
-import Button from 'primevue/button'
 import { getRunTrace } from '@/api/accountCopilot'
 import type { CopilotEvent, CopilotRun, CopilotRunTraceResponse, CopilotTraceTimelineNode } from '@/types/accountCopilot'
 import CopilotObservationList from './CopilotObservationList.vue'
 import CopilotToolCallList from './CopilotToolCallList.vue'
+import { sanitizeJsonValue } from '@/utils/sanitizeJson'
 
 const props = defineProps<{
   run: CopilotRun | null
@@ -14,6 +14,9 @@ const props = defineProps<{
 const trace = ref<CopilotRunTraceResponse | null>(null)
 const traceLoading = ref(false)
 const traceError = ref('')
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+const POLLABLE_STATUSES = new Set(['queued', 'running', 'awaiting_approval'])
 
 const executionSummary = computed(() => {
   const run = props.run
@@ -42,7 +45,7 @@ const executionSummary = computed(() => {
 const hasTraceData = computed(() => (trace.value?.timeline?.length || 0) > 0)
 
 async function fetchTrace() {
-  if (!props.run) return
+  if (!props.run || traceLoading.value) return
   traceLoading.value = true
   traceError.value = ''
   try {
@@ -54,13 +57,47 @@ async function fetchTrace() {
   }
 }
 
-watch(() => props.run?.id, (runId) => {
+function startPolling() {
+  stopPolling()
+  if (props.run && POLLABLE_STATUSES.has(props.run.status)) {
+    pollTimer = setInterval(() => {
+      if (!traceLoading.value) {
+        void fetchTrace()
+      }
+    }, 1000)
+  }
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+watch(() => props.run?.id, () => {
   trace.value = null
-  if (runId) fetchTrace()
+  stopPolling()
+  if (props.run?.id) {
+    void fetchTrace()
+    startPolling()
+  }
 }, { immediate: true })
 
-function formatJson(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2)
+watch(() => props.run?.status, (status) => {
+  if (status && POLLABLE_STATUSES.has(status)) {
+    startPolling()
+  } else {
+    stopPolling()
+  }
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
+})
+
+function sanitizeJson(value: unknown): string {
+  return JSON.stringify(sanitizeJsonValue(value ?? {}), null, 2)
 }
 
 function statusSeverity(status?: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
@@ -153,7 +190,7 @@ function eventLabel(event: CopilotEvent): string {
 
       <section class="trace-section">
         <h4>运行轨迹 Timeline</h4>
-        <div v-if="traceLoading" class="trace-panel__empty">加载中...</div>
+        <div v-if="traceLoading && !trace" class="trace-panel__empty">加载中...</div>
         <div v-else-if="traceError" class="trace-panel__empty trace-panel__error">{{ traceError }}</div>
         <div v-else-if="!hasTraceData" class="trace-panel__empty">无轨迹数据。</div>
         <div v-else class="timeline">
@@ -182,19 +219,11 @@ function eventLabel(event: CopilotEvent): string {
               </div>
               <details v-if="Object.keys(node.payload || {}).length > 0" class="timeline__details">
                 <summary>详情</summary>
-                <pre>{{ formatJson(node.payload) }}</pre>
+                <pre>{{ sanitizeJson(node.payload) }}</pre>
               </details>
             </div>
           </div>
         </div>
-        <Button
-          v-if="!traceLoading && run"
-          label="刷新轨迹"
-          size="small"
-          severity="secondary"
-          class="trace-refresh-btn"
-          @click="fetchTrace"
-        />
       </section>
 
       <section v-if="run._live_events?.length" class="trace-section">
@@ -205,7 +234,7 @@ function eventLabel(event: CopilotEvent): string {
           <span>{{ event.created_at || 'streaming' }}</span>
           <details>
             <summary>payload</summary>
-            <pre>{{ formatJson(event.payload) }}</pre>
+            <pre>{{ sanitizeJson(event.payload) }}</pre>
           </details>
         </article>
       </section>
@@ -219,7 +248,7 @@ function eventLabel(event: CopilotEvent): string {
         </div>
         <details>
           <summary>raw_action</summary>
-          <pre>{{ formatJson(run.planner_output?.raw_action || run.planner_output) }}</pre>
+          <pre>{{ sanitizeJson(run.planner_output?.raw_action || run.planner_output) }}</pre>
         </details>
       </section>
 
@@ -231,7 +260,7 @@ function eventLabel(event: CopilotEvent): string {
           <p>{{ action.thought_summary }}</p>
           <details>
             <summary>evidence_sufficiency</summary>
-            <pre>{{ formatJson(action.evidence_sufficiency) }}</pre>
+            <pre>{{ sanitizeJson(action.evidence_sufficiency) }}</pre>
           </details>
         </article>
       </section>
@@ -250,7 +279,7 @@ function eventLabel(event: CopilotEvent): string {
         <h4>Approval</h4>
         <details open>
           <summary>pending_approval / skill_requests</summary>
-          <pre>{{ formatJson({ pending_approval: run.pending_approval, skill_requests: run.skill_requests }) }}</pre>
+          <pre>{{ sanitizeJson({ pending_approval: run.pending_approval, skill_requests: run.skill_requests }) }}</pre>
         </details>
       </section>
 
@@ -263,7 +292,7 @@ function eventLabel(event: CopilotEvent): string {
         </div>
         <details>
           <summary>memory_snapshot</summary>
-          <pre>{{ formatJson(run.memory_snapshot) }}</pre>
+          <pre>{{ sanitizeJson(run.memory_snapshot) }}</pre>
         </details>
       </section>
     </template>
@@ -466,9 +495,5 @@ pre {
 
 .timeline__node--final_answer .timeline__head strong {
   color: #86efac;
-}
-
-.trace-refresh-btn {
-  margin-top: 8px;
 }
 </style>

@@ -49,6 +49,7 @@ export interface TradeReviewResult {
   metadata: Record<string, unknown>
   evidence_summary: Record<string, unknown>
   run_trace_summary: Record<string, unknown>
+  evidence_pack?: Record<string, any> | null
   created_at: string
   updated_at: string
 }

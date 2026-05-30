@@ -7,7 +7,7 @@ from app.api.routes.trade_review_agent import _single_trade_task_metadata
 from app.main import app
 from app.schemas.longbridge import LongbridgeCandleItem, LongbridgeCandlesResponse, LongbridgeNewsResponse
 from app.services.trade_review_agent import TradeReviewAgent, TradeReviewAgentError, extract_json_object, rating_for_score
-from app.services.trade_review_evidence import TradeReviewEvidenceBuilder
+from app.services.trade_review_evidence import TradeReviewEvidenceBuilder, normalize_trade_side
 from app.services.trade_review_scoring import TradeReviewMetricsCalculator
 
 client = TestClient(app)
@@ -224,6 +224,101 @@ def test_symbol_level_evidence_contains_required_sections() -> None:
     assert evidence["symbol"] == "AAPL.US"
     assert evidence["trade_facts"]["trades"][0]["trade_id"] == "doc-1"
     assert "performance_metrics" in evidence
+
+
+def test_symbol_trade_facts_include_deterministic_sell_lifecycle_fields() -> None:
+    es_client = StubESClient(
+        [
+            {
+                "hits": {
+                    "hits": [
+                        {"_id": "buy-1", "_source": {"symbol": "MSFT", "trade_date": "2025-01-02", "buy_sell": "BOT", "quantity": 10, "trade_price": 100, "proceeds": -1000}},
+                        {"_id": "sell-1", "_source": {"symbol": "MSFT", "trade_date": "2025-02-02", "buy_sell": "SLD", "quantity": -10, "trade_price": 120, "proceeds": 1200}},
+                        {"_id": "buy-2", "_source": {"symbol": "MSFT", "trade_date": "2025-03-02", "buy_sell": "BUY", "quantity": 5, "trade_price": 110, "proceeds": -550}},
+                    ]
+                }
+            }
+        ]
+    )
+    builder = TradeReviewEvidenceBuilder(es_client, DummySettings(), StubLongbridgeClient())
+
+    trades_data = builder.tool_get_symbol_trades("MSFT")
+
+    assert [trade["side"] for trade in trades_data["trades"]] == ["BUY", "SELL", "BUY"]
+    assert trades_data["buy_count"] == 2
+    assert trades_data["sell_count"] == 1
+    assert trades_data["has_sell_trades"] is True
+    assert trades_data["is_round_trip"] is True
+    assert trades_data["has_reopened_position_after_sell"] is True
+    assert trades_data["latest_trade_side"] == "BUY"
+
+
+def test_trade_review_exit_quality_na_when_no_sell_trades() -> None:
+    agent = TradeReviewAgent(None, None, None)
+    payload = valid_llm_payload()
+    payload["score_detail"]["exit_quality_score"] = {"score": 0, "max_score": 15, "reason": "尚未卖出，暂不评分"}
+
+    result = agent.validate_llm_output(
+        payload,
+        review_context={"trade_facts": {"trades": [{"side": "BUY"}], "buy_count": 1, "sell_count": 0, "has_sell_trades": False}},
+    )
+
+    exit_score = result["score_detail"]["exit_quality_score"]
+    assert exit_score["applicable"] is False
+    assert exit_score["score"] is None
+    assert result["applicable_max_score"] == 85
+
+
+def test_trade_review_exit_quality_reviewable_for_sell_then_reopened_position() -> None:
+    agent = TradeReviewAgent(None, None, None)
+    payload = valid_llm_payload()
+    payload["score_detail"]["exit_quality_score"] = {"score": 0, "max_score": 15, "reason": "尚未卖出暂不评价"}
+    payload["data_limitations"] = []
+
+    result = agent.validate_llm_output(
+        payload,
+        review_context={
+            "trade_facts": {
+                "trades": [{"side": "BUY"}, {"side": "SELL"}, {"side": "BUY"}],
+                "buy_count": 2,
+                "sell_count": 1,
+                "has_sell_trades": True,
+                "is_currently_holding": True,
+                "has_reopened_position_after_sell": True,
+            }
+        },
+    )
+
+    exit_score = result["score_detail"]["exit_quality_score"]
+    assert exit_score["applicable"] is True
+    assert exit_score["score"] == 7.5
+    assert "当前最新持仓尚未退出" in exit_score["reason"]
+    assert "暂不评价" not in exit_score["reason"]
+    assert result["applicable_max_score"] == 100
+    assert any("LLM exit_quality reason contradicted" in item for item in result["data_limitations"])
+
+
+def test_trade_review_exit_quality_reviewable_for_completed_round_trip() -> None:
+    agent = TradeReviewAgent(None, None, None)
+    payload = valid_llm_payload()
+    payload["score_detail"]["exit_quality_score"] = {"score": 9, "max_score": 15, "reason": "卖在阶段高点附近"}
+
+    result = agent.validate_llm_output(
+        payload,
+        review_context={"trade_facts": {"trades": [{"side": "BUY"}, {"side": "SOLD"}], "sell_count": 1, "is_currently_holding": False}},
+    )
+
+    assert result["score_detail"]["exit_quality_score"]["applicable"] is True
+    assert result["score_detail"]["exit_quality_score"]["score"] == 9
+    assert result["applicable_max_score"] == 100
+
+
+def test_trade_side_normalization_aliases() -> None:
+    assert normalize_trade_side("BUY") == "BUY"
+    assert normalize_trade_side("BOT") == "BUY"
+    assert normalize_trade_side("SELL") == "SELL"
+    assert normalize_trade_side("SLD") == "SELL"
+    assert normalize_trade_side("SOLD") == "SELL"
 
 
 def test_single_trade_evidence_contains_reviewed_trade_id() -> None:

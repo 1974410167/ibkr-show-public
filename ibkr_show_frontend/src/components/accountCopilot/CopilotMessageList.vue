@@ -48,10 +48,19 @@ function shouldRenderApproval(run?: CopilotRun): run is CopilotRun {
 }
 
 const renderItems = computed<RenderItem[]>(() => {
-  const lastMessageIndexByRun = new Map<string, number>()
+  // Find the first assistant message index for each run
+  const firstAssistantIndexByRun = new Map<string, number>()
   props.messages.forEach((message, index) => {
-    if (message.run_id) {
-      lastMessageIndexByRun.set(message.run_id, index)
+    if (message.run_id && message.role === 'assistant' && !firstAssistantIndexByRun.has(message.run_id)) {
+      firstAssistantIndexByRun.set(message.run_id, index)
+    }
+  })
+
+  // Fallback: if no assistant message, use the first message of the run
+  const firstMessageIndexByRun = new Map<string, number>()
+  props.messages.forEach((message, index) => {
+    if (message.run_id && !firstMessageIndexByRun.has(message.run_id)) {
+      firstMessageIndexByRun.set(message.run_id, index)
     }
   })
 
@@ -61,7 +70,11 @@ const renderItems = computed<RenderItem[]>(() => {
     items.push({ type: 'message', key: `message:${message.id}`, message })
 
     const run = message.run_id ? props.runsById[message.run_id] : undefined
-    if (!shouldRenderApproval(run) || lastMessageIndexByRun.get(run.id) !== index) return
+    if (!shouldRenderApproval(run)) return
+
+    // Insert approval card after the first assistant message of this run
+    const insertAfterIndex = firstAssistantIndexByRun.get(run.id) ?? firstMessageIndexByRun.get(run.id)
+    if (insertAfterIndex !== index) return
 
     const key = approvalKey(run)
     if (seenApprovalKeys.has(key)) return

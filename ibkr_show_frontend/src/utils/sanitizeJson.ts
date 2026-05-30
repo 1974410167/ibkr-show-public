@@ -35,6 +35,9 @@ const EXACT_SENSITIVE_KEYS = new Set([
   'private_key',
   'session',
   'session_id',
+  'reasoning',
+  'thinking',
+  'chain_of_thought',
 ])
 
 export function isSensitiveJsonKey(key: string): boolean {

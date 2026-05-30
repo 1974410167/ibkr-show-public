@@ -48,6 +48,7 @@ from app.services.trade_review_agent import (
     extract_json_object,
     rating_for_score,
 )
+from app.services.trade_review_evidence import normalize_trade_side
 
 # Reuse pydantic validation
 from pydantic import ValidationError
@@ -99,7 +100,23 @@ def make_load_trade_facts_node(deps):
                 end_date = review_end
             elif review_type == "symbol_level_review" and symbol:
                 trades_data = builder.tool_get_symbol_trades(symbol, start_date, end_date)
-                trade_facts = {"trades": trades_data.get("trades", []), "source": "IBKR_ONLY"}
+                trade_facts = {
+                    "trades": trades_data.get("trades", []),
+                    "source": "IBKR_ONLY",
+                    **{
+                        key: trades_data.get(key)
+                        for key in (
+                            "buy_count",
+                            "sell_count",
+                            "has_buy_trades",
+                            "has_sell_trades",
+                            "is_round_trip",
+                            "has_reopened_position_after_sell",
+                            "latest_trade_side",
+                            "latest_trade_date",
+                        )
+                    },
+                }
                 review_context = {}
             else:
                 trade_facts = {}
@@ -262,8 +279,16 @@ def make_build_trade_review_context_node(deps):
             event = state.get("event_evidence") or {}
 
             # Enrich trade_facts with current position from position_evidence node
+            current_position = {}
             if position and position.get("position"):
-                trade_facts = {**trade_facts, "current_position": position.get("position")}
+                current_position = position.get("position") or {}
+            lifecycle_facts = _trade_lifecycle_facts(trade_facts.get("trades") or [], current_position)
+            trade_facts = {
+                **trade_facts,
+                **{key: value for key, value in lifecycle_facts.items() if trade_facts.get(key) is None},
+                "is_currently_holding": lifecycle_facts["is_currently_holding"],
+                "current_position": current_position,
+            }
 
             merged = {
                 "review_type": review_type,
@@ -293,6 +318,39 @@ def make_build_trade_review_context_node(deps):
                 "node_traces": [trace],
             }
     return build_trade_review_context_node
+
+
+def _trade_lifecycle_facts(trades: list[dict], current_position: dict | None) -> dict:
+    buy_count = sum(1 for trade in trades if isinstance(trade, dict) and normalize_trade_side(trade.get("side")) == "BUY")
+    sell_count = sum(1 for trade in trades if isinstance(trade, dict) and normalize_trade_side(trade.get("side")) == "SELL")
+    latest_trade = trades[-1] if trades and isinstance(trades[-1], dict) else {}
+    latest_trade_side = normalize_trade_side(latest_trade.get("side")) if latest_trade else None
+    latest_trade_date = latest_trade.get("date") if latest_trade else None
+    is_currently_holding = bool(current_position and abs(float(current_position.get("quantity") or 0.0)) > 0)
+
+    seen_sell = False
+    has_reopened_position_after_sell = False
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        side = normalize_trade_side(trade.get("side"))
+        if side == "SELL":
+            seen_sell = True
+        elif side == "BUY" and seen_sell:
+            has_reopened_position_after_sell = True
+            break
+
+    return {
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "has_buy_trades": buy_count > 0,
+        "has_sell_trades": sell_count > 0,
+        "is_round_trip": buy_count > 0 and sell_count > 0,
+        "is_currently_holding": is_currently_holding,
+        "has_reopened_position_after_sell": has_reopened_position_after_sell,
+        "latest_trade_side": latest_trade_side,
+        "latest_trade_date": latest_trade_date,
+    }
 
 
 # === Parallel analysis nodes ===

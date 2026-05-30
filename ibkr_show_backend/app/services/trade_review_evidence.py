@@ -16,6 +16,8 @@ from app.utils.dates import parse_date
 
 TARGET_ANNUAL_RETURN = 0.30
 DEFAULT_BENCHMARKS = ["SPY.US", "QQQ.US", "SMH.US"]
+BUY_SIDE_ALIASES = {"BUY", "BOT", "BOUGHT"}
+SELL_SIDE_ALIASES = {"SELL", "SLD", "SOLD", "SELL_SHORT", "SSHORT"}
 
 
 def normalize_ibkr_symbol(symbol: str) -> str:
@@ -36,6 +38,15 @@ def build_stable_trade_id(trade: dict) -> str:
         for key in ("symbol", "trade_date", "date_time", "buy_sell", "quantity", "trade_price", "proceeds")
     )
     return sha1(raw.encode("utf-8")).hexdigest()
+
+
+def normalize_trade_side(value: Any) -> str:
+    side = str(value or "").strip().upper().replace(" ", "_")
+    if side in BUY_SIDE_ALIASES:
+        return "BUY"
+    if side in SELL_SIDE_ALIASES:
+        return "SELL"
+    return side
 
 
 class TradeReviewEvidenceBuilder:
@@ -88,6 +99,7 @@ class TradeReviewEvidenceBuilder:
         benchmark_context = self._build_benchmark_context(review_start, review_end, data_quality)
         latest_price = symbol_candles[-1]["close"] if symbol_candles else None
         summary = self.metrics.calculate_symbol_trade_summary(normalized_trades, current_position, latest_price)
+        lifecycle_facts = self._build_trade_lifecycle_facts(normalized_trades, current_position)
         post_exit = self.metrics.calculate_post_trade_returns(symbol_candles, last_trade_date) if last_trade_date else {}
         max_move = self.metrics.calculate_max_profit_and_drawdown(
             symbol_candles,
@@ -106,11 +118,13 @@ class TradeReviewEvidenceBuilder:
                 "trades": normalized_trades,
                 "first_buy_date": first_buy_date,
                 "last_trade_date": last_trade_date,
-                "is_currently_holding": is_currently_holding,
                 "current_position": current_position or {},
+                **lifecycle_facts,
             },
             "performance_metrics": {
                 **summary,
+                "buy_count": lifecycle_facts["buy_count"],
+                "sell_count": lifecycle_facts["sell_count"],
                 **max_move,
                 "post_exit_return_7d": post_exit.get("7d"),
                 "post_exit_return_30d": post_exit.get("30d"),
@@ -220,7 +234,12 @@ class TradeReviewEvidenceBuilder:
     def tool_get_symbol_trades(self, symbol: str, start_date: str | None = None, end_date: str | None = None) -> dict:
         ibkr_symbol = normalize_ibkr_symbol(symbol)
         trades = [self._normalize_trade(trade) for trade in self._fetch_symbol_trades(ibkr_symbol, start_date, end_date)]
-        return {"source": "IBKR", "symbol": normalize_longbridge_symbol(symbol), "trades": trades}
+        return {
+            "source": "IBKR",
+            "symbol": normalize_longbridge_symbol(symbol),
+            "trades": trades,
+            **self._build_trade_lifecycle_facts(trades, None),
+        }
 
     def tool_get_single_trade(self, trade_id: str) -> dict:
         trade = self._fetch_trade_by_id(trade_id)
@@ -464,7 +483,7 @@ class TradeReviewEvidenceBuilder:
         return trades[-1].get("date") if trades else None
 
     def _normalize_trade(self, trade: dict) -> dict:
-        side = str(trade.get("buy_sell") or "").upper()
+        side = normalize_trade_side(trade.get("buy_sell"))
         quantity = trade.get("quantity")
         price = trade.get("trade_price")
         proceeds = trade.get("proceeds")
@@ -482,6 +501,36 @@ class TradeReviewEvidenceBuilder:
             "commission": abs(float(trade.get("ib_commission") or 0.0)),
             "currency": trade.get("currency"),
             "realized_pnl": float(realized_pnl) if realized_pnl is not None else None,
+        }
+
+    def _build_trade_lifecycle_facts(self, trades: list[dict], current_position: dict | None) -> dict:
+        buy_count = sum(1 for trade in trades if normalize_trade_side(trade.get("side")) == "BUY")
+        sell_count = sum(1 for trade in trades if normalize_trade_side(trade.get("side")) == "SELL")
+        latest_trade = trades[-1] if trades else {}
+        latest_trade_side = normalize_trade_side(latest_trade.get("side")) if latest_trade else None
+        latest_trade_date = latest_trade.get("date") if latest_trade else None
+        is_currently_holding = bool(current_position and abs(float(current_position.get("quantity") or 0.0)) > 0)
+
+        seen_sell = False
+        has_reopened_position_after_sell = False
+        for trade in trades:
+            side = normalize_trade_side(trade.get("side"))
+            if side == "SELL":
+                seen_sell = True
+            elif side == "BUY" and seen_sell:
+                has_reopened_position_after_sell = True
+                break
+
+        return {
+            "buy_count": buy_count,
+            "sell_count": sell_count,
+            "has_buy_trades": buy_count > 0,
+            "has_sell_trades": sell_count > 0,
+            "is_round_trip": buy_count > 0 and sell_count > 0,
+            "is_currently_holding": is_currently_holding,
+            "has_reopened_position_after_sell": has_reopened_position_after_sell,
+            "latest_trade_side": latest_trade_side,
+            "latest_trade_date": latest_trade_date,
         }
 
     def _single_trade_lifecycle_stage(

@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { sanitizeJsonValue } from '@/utils/sanitizeJson'
+
 defineProps<{
   observations: Record<string, any>[]
 }>()
 
-function formatJson(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2)
+function sanitizeJson(value: unknown): string {
+  return JSON.stringify(sanitizeJsonValue(value ?? {}), null, 2)
 }
 </script>
 
@@ -21,7 +23,7 @@ function formatJson(value: unknown): string {
       </div>
       <details>
         <summary>data preview</summary>
-        <pre>{{ formatJson(obs.data) }}</pre>
+        <pre>{{ sanitizeJson(obs.data) }}</pre>
       </details>
     </article>
   </div>

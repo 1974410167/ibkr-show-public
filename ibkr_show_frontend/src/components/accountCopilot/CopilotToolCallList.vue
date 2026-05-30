@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { sanitizeJsonValue } from '@/utils/sanitizeJson'
+
 defineProps<{
   toolCalls: Record<string, any>[]
 }>()
 
-function formatJson(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2)
+function sanitizeJson(value: unknown): string {
+  return JSON.stringify(sanitizeJsonValue(value ?? {}), null, 2)
 }
 </script>
 
@@ -18,7 +20,7 @@ function formatJson(value: unknown): string {
       <p>round {{ call.round ?? '--' }} · {{ call.latency_ms ?? '--' }}ms</p>
       <details>
         <summary>arguments</summary>
-        <pre>{{ formatJson(call.arguments) }}</pre>
+        <pre>{{ sanitizeJson(call.arguments) }}</pre>
       </details>
     </article>
   </div>

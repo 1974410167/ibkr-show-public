@@ -139,6 +139,23 @@ function ratingLabel(rating: string): string {
   return ratingLabels[rating] ?? rating
 }
 
+function selectedTradeFacts(): Record<string, any> {
+  return (selectedReview.value?.evidence_pack?.trade_facts as Record<string, any> | undefined) ?? {}
+}
+
+function scoreReason(key: string): string {
+  const item = selectedReview.value?.score_detail[key]
+  const reason = item?.reason || '暂无说明'
+  if (key !== 'exit_quality_score' || item?.applicable === false) {
+    return reason
+  }
+  const facts = selectedTradeFacts()
+  if (facts.has_reopened_position_after_sell === true && !reason.includes('当前最新持仓尚未退出')) {
+    return `${reason}；评价历史卖出批次；当前最新持仓尚未退出。`
+  }
+  return reason
+}
+
 function taskElapsedSeconds(task: AgentTask): number {
   const start = Date.parse(task.started_at || task.created_at)
   const end = task.completed_at ? Date.parse(task.completed_at) : now.value
@@ -507,7 +524,7 @@ onBeforeUnmount(() => {
                     <strong v-if="selectedReview.score_detail[key]?.applicable === false">N/A</strong>
                     <strong v-else>{{ selectedReview.score_detail[key]?.score ?? 0 }}/{{ selectedReview.score_detail[key]?.max_score ?? 0 }}</strong>
                   </div>
-                  <p>{{ selectedReview.score_detail[key]?.reason ?? '暂无说明' }}</p>
+                  <p>{{ scoreReason(key) }}</p>
                 </div>
               </section>
 

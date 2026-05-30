@@ -267,11 +267,14 @@ def normalize_trade_decision_output(payload: dict, expected_decision_type: str |
 def normalize_trade_review_output(payload: dict, *, review_context: dict | None = None) -> dict:
     result = dict(payload)
     not_applicable: set[str] = set()
-    if not _has_sell_trades(result, review_context):
+    has_sell_trades = _has_sell_trades(result, review_context)
+    if not has_sell_trades:
         not_applicable.add("exit_quality_score")
     score_detail, total = _normalize_score_detail(
         result.get("score_detail"), TRADE_REVIEW_SCORE_DIMENSIONS, fill_missing=True, not_applicable=not_applicable,
     )
+    if has_sell_trades:
+        total = _normalize_reviewable_exit_quality(score_detail, result, review_context)
     if _is_open_buy_single_trade(result, review_context) and total <= 0:
         minimum_reviewable_scores = {
             "entry_quality_score": 5.0,
@@ -521,13 +524,56 @@ def _is_open_buy_single_trade(payload: dict, review_context: dict | None) -> boo
 
 def _has_sell_trades(payload: dict, review_context: dict | None) -> bool:
     facts = _extract_trade_review_facts(review_context)
+    if facts.get("has_sell_trades") is True:
+        return True
+    sell_count = _to_number(facts.get("sell_count"))
+    if sell_count is not None and sell_count > 0:
+        return True
     for trade in facts.get("trades") or []:
-        if isinstance(trade, dict) and str(trade.get("side") or "").upper() == "SELL":
+        if isinstance(trade, dict) and _normalize_trade_side(trade.get("side") or trade.get("buy_sell")) == "SELL":
             return True
     for trade in facts.get("related_symbol_trades") or []:
-        if isinstance(trade, dict) and str(trade.get("side") or "").upper() == "SELL":
+        if isinstance(trade, dict) and _normalize_trade_side(trade.get("side") or trade.get("buy_sell")) == "SELL":
             return True
     return False
+
+
+def _normalize_reviewable_exit_quality(score_detail: dict, result: dict, review_context: dict | None) -> float:
+    exit_score = score_detail.get("exit_quality_score") or {}
+    reason = str(exit_score.get("reason") or "")
+    facts = _extract_trade_review_facts(review_context)
+    limitations = result.setdefault("data_limitations", [])
+    if not isinstance(limitations, list):
+        limitations = [str(limitations)]
+        result["data_limitations"] = limitations
+
+    if _exit_reason_denies_sell(reason) and float(exit_score.get("score") or 0.0) == 0.0:
+        exit_score["score"] = 7.5
+        exit_score["reason"] = (
+            "复盘区间内存在已发生的卖出交易，卖点质量按历史卖出批次进行中性兜底评分；"
+            "原始 LLM 理由误判为未退出状态。"
+        )
+        limitations.append(
+            "LLM exit_quality reason contradicted deterministic sell-trade facts; normalized as reviewable historical exit quality."
+        )
+
+    if facts.get("has_reopened_position_after_sell") and "当前最新持仓尚未退出" not in str(exit_score.get("reason") or ""):
+        exit_score["reason"] = f"{exit_score.get('reason') or '评价历史已发生的卖出批次。'}；当前最新持仓尚未退出，不评价最新持仓的最终退出质量。"
+
+    return sum(float(item.get("score") or 0.0) for item in score_detail.values() if item.get("applicable", True))
+
+
+def _exit_reason_denies_sell(reason: str) -> bool:
+    return bool(re.search(r"(尚未卖出|暂未卖出|未发生卖出|没有卖出|无卖出|无法评价|暂不评价|暂不评分)", reason))
+
+
+def _normalize_trade_side(value: Any) -> str:
+    side = str(value or "").strip().upper().replace(" ", "_")
+    if side in {"BUY", "BOT", "BOUGHT"}:
+        return "BUY"
+    if side in {"SELL", "SLD", "SOLD", "SELL_SHORT", "SSHORT"}:
+        return "SELL"
+    return side
 
 
 def _extract_trade_review_facts(review_context: dict | None) -> dict:

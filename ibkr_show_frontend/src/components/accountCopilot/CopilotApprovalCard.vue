@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
 import type { CopilotApproval, CopilotRun } from '@/types/accountCopilot'
 import { approvalButtonState, isApprovalPending } from './approvalStatus'
+import { sanitizeJsonValue } from '@/utils/sanitizeJson'
 
 const props = defineProps<{
   run: CopilotRun
@@ -14,12 +16,14 @@ const emit = defineEmits<{
   approve: [run: CopilotRun, approved: boolean]
 }>()
 
+const expanded = ref(false)
+
 function shortHash(value?: string): string {
   return value ? value.slice(0, 8) : '--'
 }
 
-function formatJson(value: unknown): string {
-  return JSON.stringify(value ?? {}, null, 2)
+function sanitizeJson(value: unknown): string {
+  return JSON.stringify(sanitizeJsonValue(value ?? {}), null, 2)
 }
 
 function statusLabel(status?: string): string {
@@ -103,22 +107,39 @@ function buttonState(approval: CopilotApproval) {
 
 <template>
   <section v-if="props.run.pending_approval" class="approval-card">
-    <div class="approval-card__header">
-      <div>
-        <p class="approval-card__eyebrow">Account Copilot</p>
-        <h3>{{ displaySkillName(props.run.pending_approval) }}</h3>
-      </div>
+    <div class="approval-card__summary">
+      <span class="approval-card__skill-name">Skill: {{ displaySkillName(props.run.pending_approval) }}</span>
       <Tag
         :value="statusLabel(props.run.pending_approval.status)"
         :severity="statusSeverity(props.run.pending_approval.status)"
+        class="approval-card__status-tag"
       />
+      <span class="approval-card__hint">需要确认后继续调用</span>
+      <template v-if="isPending(props.run.pending_approval)">
+        <Button
+          label="同意"
+          icon="pi pi-check"
+          size="small"
+          :loading="approving && isPending(props.run.pending_approval)"
+          :disabled="buttonState(props.run.pending_approval).approveDisabled"
+          @click="emit('approve', props.run, true)"
+        />
+        <Button
+          label="拒绝"
+          icon="pi pi-times"
+          size="small"
+          severity="secondary"
+          class="approval-card__reject-btn"
+          :disabled="buttonState(props.run.pending_approval).rejectDisabled"
+          @click="emit('approve', props.run, false)"
+        />
+      </template>
+      <button class="approval-card__expand-toggle" @click="expanded = !expanded">
+        {{ expanded ? '收起详情' : '展开详情' }}
+      </button>
     </div>
 
-    <div class="approval-card__body">
-      <div class="approval-card__field">
-        <span>需要调用</span>
-        <strong>{{ displaySkillName(props.run.pending_approval) }}</strong>
-      </div>
+    <div v-if="expanded" class="approval-card__details">
       <div class="approval-card__field">
         <span>说明</span>
         <p>{{ props.run.pending_approval.approval_message || '我需要先获得你的确认，才会访问账户相关数据并调用该能力。' }}</p>
@@ -134,28 +155,6 @@ function buttonState(approval: CopilotApproval) {
         <span>过期时间</span>
         <strong>{{ formatLocalDateTime(props.run.pending_approval.expires_at) }}</strong>
       </div>
-    </div>
-
-    <div class="approval-card__actions">
-      <Button
-        label="同意调用"
-        icon="pi pi-check"
-        class="p-button p-button--accent"
-        :loading="approving && isPending(props.run.pending_approval)"
-        :disabled="buttonState(props.run.pending_approval).approveDisabled"
-        @click="emit('approve', props.run, true)"
-      />
-      <Button
-        label="拒绝调用"
-        icon="pi pi-times"
-        class="p-button p-button--ghost approval-card__reject"
-        :disabled="buttonState(props.run.pending_approval).rejectDisabled"
-        @click="emit('approve', props.run, false)"
-      />
-    </div>
-
-    <details class="approval-card__json">
-      <summary>展开查看 Skill 参数</summary>
       <div class="approval-card__debug-grid">
         <span>skill name</span>
         <strong>{{ props.run.pending_approval.skill_name || '--' }}</strong>
@@ -170,8 +169,11 @@ function buttonState(approval: CopilotApproval) {
         <span>request id</span>
         <strong>{{ props.run.pending_approval.approval_id || '--' }}</strong>
       </div>
-      <pre>{{ formatJson(props.run.pending_approval.skill_arguments) }}</pre>
-    </details>
+      <details class="approval-card__json">
+        <summary>Skill 参数 JSON</summary>
+        <pre>{{ sanitizeJson(props.run.pending_approval.skill_arguments) }}</pre>
+      </details>
+    </div>
   </section>
 </template>
 
@@ -180,44 +182,65 @@ function buttonState(approval: CopilotApproval) {
   width: min(720px, 100%);
   max-width: 84%;
   margin: 14px 0;
-  padding: 16px;
+  padding: 12px 14px;
   border: 1px solid rgba(34, 211, 238, 0.24);
   border-radius: 14px;
   background: rgba(8, 20, 36, 0.92);
-  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
-.approval-card__header {
+.approval-card__summary {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  padding-bottom: 12px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
-.approval-card__header h3 {
-  margin: 2px 0 0;
+.approval-card__skill-name {
   color: #e0f2fe;
-  font-size: 1rem;
+  font-size: 0.88rem;
+  font-weight: 600;
 }
 
-.approval-card__eyebrow {
-  margin: 0;
-  color: #22d3ee;
-  font-size: 0.72rem;
-  text-transform: uppercase;
+.approval-card__status-tag {
+  transform: scale(0.88);
 }
 
-.approval-card__body {
+.approval-card__hint {
+  color: #7dd3fc;
+  font-size: 0.78rem;
+}
+
+.approval-card__reject-btn {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.22);
+}
+
+.approval-card__expand-toggle {
+  margin-left: auto;
+  padding: 0;
+  color: #38bdf8;
+  font-size: 0.76rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.approval-card__expand-toggle:hover {
+  text-decoration: underline;
+}
+
+.approval-card__details {
   display: grid;
-  gap: 14px;
-  margin-top: 14px;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(125, 211, 252, 0.12);
 }
 
 .approval-card__field {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .approval-card__field--inline {
@@ -240,26 +263,25 @@ function buttonState(approval: CopilotApproval) {
 .approval-card__field p {
   margin: 0;
   color: #dbeafe;
-  line-height: 1.7;
+  line-height: 1.6;
 }
 
 .approval-card__scopes {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   margin: 0;
   padding-left: 18px;
   color: #dbeafe;
 }
 
 .approval-card__json {
-  margin-top: 14px;
   color: #bae6fd;
   font-size: 0.82rem;
 }
 
 .approval-card__json pre {
-  margin: 10px 0 0;
-  padding: 12px;
+  margin: 8px 0 0;
+  padding: 10px;
   max-height: 180px;
   overflow: auto;
   color: #dbeafe;
@@ -272,33 +294,11 @@ function buttonState(approval: CopilotApproval) {
 .approval-card__debug-grid {
   display: grid;
   grid-template-columns: 120px 1fr;
-  gap: 8px 12px;
-  margin-top: 10px;
-  padding: 12px;
+  gap: 6px 10px;
+  padding: 10px;
   border: 1px solid rgba(125, 211, 252, 0.12);
   border-radius: 10px;
   background: rgba(2, 8, 23, 0.42);
-}
-
-.approval-card__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.approval-card__actions :deep(.p-button) {
-  flex: 0 1 auto;
-  width: auto;
-  min-height: 42px;
-  padding: 0.72rem 1rem;
-  align-self: flex-start;
-}
-
-.approval-card__reject {
-  color: #fecaca;
-  border-color: rgba(248, 113, 113, 0.22);
 }
 
 @media (max-width: 720px) {

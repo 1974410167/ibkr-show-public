@@ -442,9 +442,10 @@ function updatePageHeight(): void {
   const page = pageRef.value
   if (!page) return
   const rect = page.getBoundingClientRect()
-  const bottomGap = window.innerWidth <= 820 ? 52 : 64
-  const availableHeight = Math.max(360, window.innerHeight - rect.top - bottomGap)
-  page.style.setProperty('--account-copilot-height', `${availableHeight}px`)
+  const bottomGap = window.innerWidth <= 820 ? 32 : 40
+  const availableHeight = Math.max(640, (window.innerHeight - rect.top - bottomGap) * 1.6)
+  const cappedHeight = Math.min(availableHeight, window.innerHeight * 1.6)
+  page.style.setProperty('--account-copilot-height', `${cappedHeight}px`)
 }
 
 function isMessagesNearBottom(): boolean {
@@ -647,11 +648,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: stretch;
   height: var(--account-copilot-height, calc(100vh - 180px));
-  min-height: 0;
+  min-height: 640px;
   margin: 24px auto 0;
   max-width: 1720px;
   width: 100%;
-  overflow: hidden;
+  overflow: auto;
   color: #e2e8f0;
   border: 1px solid rgba(125, 211, 252, 0.15);
   border-radius: 18px;
