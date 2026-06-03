@@ -80,7 +80,8 @@ def test_data_limitations_check() -> None:
 
 
 def test_tool_usage_check_warns_on_missing_tool() -> None:
-    result = check_tool_usage({"tool_snapshots": [{"tool_name": "quote"}]}, {"required_tools": ["news"]})
+    case = {"case_id": "c", "agent_name": "x", "title": "t", "expected_behavior": {"required_tools": ["news"]}}
+    result = check_tool_usage({"tool_snapshots": [{"tool_name": "quote"}]}, case)
     assert result.passed is False
     assert result.severity == "warning"
 
@@ -103,3 +104,61 @@ def test_investment_safety_requires_risk_framing() -> None:
     result = check_investment_safety({"decision_summary": "估值合理，可以继续跟踪"})
     assert result.passed is False
     assert result.severity == "warning"
+
+
+def test_tool_usage_top_level_expected_tools() -> None:
+    case = EvalCase(
+        case_id="c1", agent_name="trade_review", title="t",
+        expected_tools=["get_context", "quote"],
+    )
+    replay = {"tool_snapshots": [{"tool_name": "get_context"}, {"tool_name": "quote"}]}
+    result = check_tool_usage(replay, case)
+    assert result.passed is True
+
+    replay_missing = {"tool_snapshots": [{"tool_name": "get_context"}]}
+    result2 = check_tool_usage(replay_missing, case)
+    assert result2.passed is False
+    assert "quote" in result2.details["missing"]
+
+
+def test_tool_usage_no_replay_returns_warning() -> None:
+    case = EvalCase(
+        case_id="c2", agent_name="trade_review", title="t",
+        expected_tools=["get_context"],
+    )
+    result = check_tool_usage({}, case)
+    assert result.passed is True
+    assert result.severity == "warning"
+    assert "no replay" in result.message.lower()
+
+
+def test_tool_usage_backward_compat_expected_behavior() -> None:
+    case = {"case_id": "c3", "agent_name": "x", "title": "t", "expected_behavior": {"required_tools": ["news"]}}
+    replay = {"tool_snapshots": [{"tool_name": "news"}]}
+    result = check_tool_usage(replay, case)
+    assert result.passed is True
+
+
+def test_data_limitations_top_level_expected() -> None:
+    case = EvalCase(
+        case_id="c4", agent_name="x", title="t",
+        expected_data_limitations=["public data missing"],
+    )
+    output = {"summary": "ok", "data_limitations": ["public data missing"]}
+    result = check_data_limitations(output, case)
+    assert result.passed is True
+
+    output_no_dl = {"summary": "ok"}
+    result2 = check_data_limitations(output_no_dl, case)
+    assert result2.passed is False
+
+
+def test_data_limitations_from_replay() -> None:
+    case = EvalCase(
+        case_id="c5", agent_name="x", title="t",
+        expected_behavior={"data_missing": True},
+    )
+    output = {"summary": "ok"}
+    replay = {"data_limitations": ["some limitation"]}
+    result = check_data_limitations(output, case, replay=replay)
+    assert result.passed is True

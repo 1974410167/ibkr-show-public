@@ -24,11 +24,13 @@ class RiskAssessmentAgent:
         llm_service: Any,
         repository: Any,
         mcp_adapter: Any = None,
+        monitoring_service: Any = None,
     ) -> None:
         self._account_facts_builder = account_facts_builder
         self._llm_service = llm_service
         self._repository = repository
         self._mcp_adapter = mcp_adapter
+        self._monitoring_service = monitoring_service
         self._graph_runner: RiskAssessmentGraphRunner | None = None
 
     def _get_graph_runner(self) -> RiskAssessmentGraphRunner:
@@ -38,6 +40,7 @@ class RiskAssessmentAgent:
                 repository=self._repository,
                 llm_service=self._llm_service,
                 mcp_adapter=self._mcp_adapter,
+                monitoring_service=self._monitoring_service,
             )
         return self._graph_runner
 

@@ -83,10 +83,26 @@ def _compact_positions_for_llm(positions: list[dict]) -> list[dict]:
 
 # === Node factories ===
 
+
+def _record_ibkr_metric(monitoring_service, *, run_id, agent_name, node_name, tool_name, ok, latency_ms, error_message=None, metadata=None):
+    if not monitoring_service:
+        return
+    try:
+        monitoring_service.record_tool_call(
+            run_id=run_id or "", session_id="", tool_name=tool_name, tool_domain="ibkr",
+            ok=ok, latency_ms=latency_ms, source="runtime", agent_name=agent_name,
+            node_name=node_name, error_message=error_message, metadata=metadata or {},
+        )
+    except Exception:
+        pass
+
+
 def make_load_daily_review_context_node(deps):
     """Load deterministic context from IBKR via review service."""
     def load_daily_review_context_node(state: dict) -> dict:
         trace = start_node_trace("load_daily_review_context")
+        import time as _time
+        _t0 = _time.monotonic()
         try:
             report_date = state["report_date"]
             deterministic_context = deps.review_service.build_review_context(
@@ -95,6 +111,12 @@ def make_load_daily_review_context_node(deps):
             positions = deterministic_context.get("positions", [])
             compact_positions = _compact_positions_for_llm(positions)
 
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="daily_position_review", node_name="load_daily_review_context",
+                tool_name="ibkr_build_review_context", ok=True, latency_ms=latency_ms,
+            )
             result = {
                 "deterministic_context": deterministic_context,
                 "compact_positions": compact_positions,
@@ -102,6 +124,13 @@ def make_load_daily_review_context_node(deps):
             trace = finish_node_trace(trace, "success")
             return {**result, "node_traces": [trace]}
         except Exception as exc:
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="daily_position_review", node_name="load_daily_review_context",
+                tool_name="ibkr_build_review_context", ok=False, latency_ms=latency_ms,
+                error_message=str(exc)[:200],
+            )
             trace = finish_node_trace(trace, "failed", error=str(exc)[:200])
             return {
                 "errors": [f"load_daily_review_context: {str(exc)[:200]}"],

@@ -75,6 +75,7 @@ class DailyPositionReviewGraphDeps:
     symbol_agent: Any = None
     macro_agent: Any = None
     prompt_service: Any = None
+    monitoring_service: Any = None
 
 
 def build_daily_position_review_graph(deps: DailyPositionReviewGraphDeps) -> Any:

@@ -52,11 +52,15 @@ defineExpose({ setCollapsed })
   width: 100%;
   margin-bottom: 8px;
   padding: 8px 10px;
-  border: 1px solid rgba(129, 160, 207, 0.14);
+  border: 1px solid rgba(129, 160, 207, 0.2);
   border-radius: var(--radius-sm);
-  background: rgba(10, 18, 32, 0.6);
+  background: #0d1e33;
   color: var(--color-text-primary);
   cursor: pointer;
+}
+
+.json-block__toggle:hover {
+  background: #112640;
 }
 
 pre {
@@ -64,10 +68,10 @@ pre {
   margin: 0;
   padding: 12px;
   overflow: auto;
-  border: 1px solid rgba(129, 160, 207, 0.14);
+  border: 1px solid rgba(129, 160, 207, 0.2);
   border-radius: var(--radius-sm);
-  background: rgba(4, 10, 20, 0.72);
-  color: var(--color-text-secondary);
+  background: #060e1a;
+  color: #c8d6e5;
   font-size: 0.8rem;
   line-height: 1.55;
   white-space: pre-wrap;

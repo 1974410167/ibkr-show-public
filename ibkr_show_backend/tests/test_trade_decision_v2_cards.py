@@ -382,6 +382,137 @@ class TestRiskRewardSubAgent:
         assert card is not None
         assert card.upside_potential_pct > 0
 
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_risk_reward_llm_enhances_text_fields_only(self, mock_so_runtime_cls):
+        """LLM enhancement updates summary/key_risks/key_opportunities but not core numeric fields."""
+        import json as _json
+
+        llm_output = {
+            "summary": "LLM增强的风险收益分析摘要",
+            "key_risks": ["估值偏高风险", "行业周期下行风险"],
+            "key_opportunities": ["业绩超预期机会", "技术面突破机会"],
+            "risk_assessment_reason": "综合评估后认为风险可控",
+            "data_limitations": [],
+        }
+        mock_so_result = MagicMock()
+        mock_so_result.ok = True
+        mock_so_result.payload = llm_output
+        mock_so_result.metadata = {"ok": True, "contract_name": "trade_decision_risk_reward"}
+
+        mock_so_runtime = MagicMock()
+        mock_so_runtime.parse_validate_repair.return_value = mock_so_result
+        mock_so_runtime_cls.return_value = mock_so_runtime
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = _json.dumps(llm_output)
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+        snapshot.avg_cost = 145.0
+        snapshot.is_holding = True
+
+        account_fit_card = _make_fallback_card("account_fit", "AAPL", "entry_decision")
+        account_fit_card.max_suggested_position_pct = 0.05
+        account_fit_card.position_size_label = "medium"
+
+        market_trend_card = _make_fallback_card("market_trend", "AAPL", "entry_decision")
+        market_trend_card.recent_return_pct = 5.0
+
+        fundamental_card = _make_fallback_card("fundamental", "AAPL", "entry_decision")
+        fundamental_card.pe_ttm = 25.0
+        fundamental_card.market_cap = 3000e9
+
+        event_card = _make_fallback_card("event", "AAPL", "entry_decision")
+
+        card, trace = sub_agent.generate(snapshot, account_fit_card, market_trend_card, fundamental_card, event_card)
+
+        # LLM-enhanced text fields should be updated
+        assert card.summary == "LLM增强的风险收益分析摘要"
+        assert card.key_risks == ["估值偏高风险", "行业周期下行风险"]
+        assert card.key_opportunities == ["业绩超预期机会", "技术面突破机会"]
+
+        # Core numeric fields must NOT be changed by LLM
+        assert card.score in (4, 8, 12)
+        assert card.reward_risk_ratio > 0
+        assert card.upside_potential_pct > 0
+        assert card.downside_risk_pct > 0
+
+        # Trace should record structured output
+        assert trace.structured_output is not None
+        assert trace.rounds_used == 1
+
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_risk_reward_llm_invalid_json_returns_base_card(self, mock_so_runtime_cls):
+        """When LLM returns invalid JSON, the rule-based base_card is returned unchanged."""
+        mock_so_result = MagicMock()
+        mock_so_result.ok = False
+        mock_so_result.payload = None
+        mock_so_result.error_code = "LLM_SCHEMA_INVALID"
+        mock_so_result.metadata = {"ok": False, "error_code": "LLM_SCHEMA_INVALID"}
+
+        mock_so_runtime = MagicMock()
+        mock_so_runtime.parse_validate_repair.return_value = mock_so_result
+        mock_so_runtime_cls.return_value = mock_so_runtime
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = "not valid json"
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+
+        account_fit_card = _make_fallback_card("account_fit", "AAPL", "entry_decision")
+        account_fit_card.max_suggested_position_pct = 0.08
+        account_fit_card.position_size_label = "medium"
+
+        market_trend_card = _make_fallback_card("market_trend", "AAPL", "entry_decision")
+        market_trend_card.recent_return_pct = 5.0
+
+        fundamental_card = _make_fallback_card("fundamental", "AAPL", "entry_decision")
+        fundamental_card.pe_ttm = 25.0
+        fundamental_card.market_cap = 3000e9
+
+        event_card = _make_fallback_card("event", "AAPL", "entry_decision")
+
+        card, trace = sub_agent.generate(snapshot, account_fit_card, market_trend_card, fundamental_card, event_card)
+
+        # Should return rule-based card (not crash)
+        assert card is not None
+        assert card.score in (4, 8, 12)
+        assert "LLM增强" not in card.summary
+        # Trace should record the fallback
+        assert trace.fallback_used is True
+        assert "risk_reward_llm_enhancement_failed" in (trace.fallback_reason or "")
+
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_risk_reward_llm_exception_returns_base_card(self, mock_so_runtime_cls):
+        """When LLM call raises exception, the rule-based base_card is returned unchanged."""
+        mock_llm = MagicMock()
+        mock_llm.chat.side_effect = RuntimeError("LLM service unavailable")
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+
+        account_fit_card = _make_fallback_card("account_fit", "AAPL", "entry_decision")
+        account_fit_card.max_suggested_position_pct = 0.08
+        account_fit_card.position_size_label = "medium"
+
+        market_trend_card = _make_fallback_card("market_trend", "AAPL", "entry_decision")
+        market_trend_card.recent_return_pct = 5.0
+
+        fundamental_card = _make_fallback_card("fundamental", "AAPL", "entry_decision")
+        fundamental_card.pe_ttm = 25.0
+        fundamental_card.market_cap = 3000e9
+
+        event_card = _make_fallback_card("event", "AAPL", "entry_decision")
+
+        card, trace = sub_agent.generate(snapshot, account_fit_card, market_trend_card, fundamental_card, event_card)
+
+        # Should return rule-based card (not crash)
+        assert card is not None
+        assert card.score in (4, 8, 12)
+        assert trace.fallback_used is True
+        assert "risk_reward_llm_enhancement_failed" in (trace.fallback_reason or "")
+
 
 class TestCardPackStructure:
     """Tests for TradeDecisionCardPack structure."""
@@ -612,3 +743,261 @@ class TestSubAgentReActBounded:
         # EventCatalyst initial tools should include news_search, finance_calendar
         source_event = inspect.getsource(EventCatalystSubAgent)
         assert "news_search" in source_event or "finance_calendar" in source_event
+
+
+class TestRiskRewardLLMRiskAssessmentReason:
+    """Tests that risk_assessment_reason flows through from LLM to card."""
+
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_llm_success_writes_risk_assessment_reason(self, mock_so_runtime_cls):
+        """When LLM succeeds, risk_assessment_reason is written to the card."""
+        import json as _json
+
+        llm_output = {
+            "summary": "LLM增强摘要",
+            "key_risks": ["风险1"],
+            "key_opportunities": ["机会1"],
+            "risk_assessment_reason": "综合评估风险可控，收益空间合理",
+            "data_limitations": [],
+        }
+        mock_so_result = MagicMock()
+        mock_so_result.ok = True
+        mock_so_result.payload = llm_output
+        mock_so_result.metadata = {"ok": True}
+
+        mock_so_runtime = MagicMock()
+        mock_so_runtime.parse_validate_repair.return_value = mock_so_result
+        mock_so_runtime_cls.return_value = mock_so_runtime
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = _json.dumps(llm_output)
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+        card, trace = sub_agent.generate(snapshot)
+
+        assert card.risk_assessment_reason == "综合评估风险可控，收益空间合理"
+        assert card.summary == "LLM增强摘要"
+        assert card.key_risks == ["风险1"]
+
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_llm_without_risk_assessment_reason_leaves_none(self, mock_so_runtime_cls):
+        """When LLM output lacks risk_assessment_reason, field stays None."""
+        import json as _json
+
+        llm_output = {
+            "summary": "LLM摘要",
+            "key_risks": [],
+            "key_opportunities": [],
+            "data_limitations": [],
+        }
+        mock_so_result = MagicMock()
+        mock_so_result.ok = True
+        mock_so_result.payload = llm_output
+        mock_so_result.metadata = {"ok": True}
+
+        mock_so_runtime = MagicMock()
+        mock_so_runtime.parse_validate_repair.return_value = mock_so_result
+        mock_so_runtime_cls.return_value = mock_so_runtime
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = _json.dumps(llm_output)
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+        card, trace = sub_agent.generate(snapshot)
+
+        assert card.risk_assessment_reason is None
+        assert card.summary == "LLM摘要"
+
+
+class TestComposerRiskRewardReason:
+    """Tests that composer uses LLM-enhanced risk_reward reason."""
+
+    def _make_card_pack(self, rr_card):
+        snapshot = _make_snapshot()
+        return TradeDecisionCardPack(
+            decision_type="entry_decision",
+            symbol="AAPL",
+            account_fact_snapshot=snapshot,
+            account_fit_card=_make_fallback_card("account_fit", "AAPL", "entry_decision"),
+            market_trend_card=_make_fallback_card("market_trend", "AAPL", "entry_decision"),
+            fundamental_valuation_card=_make_fallback_card("fundamental", "AAPL", "entry_decision"),
+            event_catalyst_card=_make_fallback_card("event", "AAPL", "entry_decision"),
+            risk_reward_card=rr_card,
+        )
+
+    def test_risk_reward_reason_prefers_risk_assessment_reason(self):
+        """risk_reward_score.reason should use risk_assessment_reason when available."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        rr = _make_fallback_card("risk_reward", "AAPL", "entry_decision")
+        rr.score = 8
+        rr.risk_assessment_reason = "LLM风险评估：下行风险可控，上行空间尚可"
+        rr.summary = "LLM摘要"
+        rr.reward_risk_ratio = 1.5
+        rr.upside_potential_pct = 20.0
+        rr.downside_risk_pct = 15.0
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(self._make_card_pack(rr))
+
+        reason = result["score_detail"]["risk_reward_score"]["reason"]
+        assert reason == "风险收益: LLM风险评估：下行风险可控，上行空间尚可"
+
+    def test_risk_reward_reason_falls_back_to_summary(self):
+        """When risk_assessment_reason is None, reason should use summary."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        rr = _make_fallback_card("risk_reward", "AAPL", "entry_decision")
+        rr.score = 8
+        rr.risk_assessment_reason = None
+        rr.summary = "上行空间30%，下行风险15%，风险收益比2.0x"
+        rr.reward_risk_ratio = 2.0
+        rr.upside_potential_pct = 30.0
+        rr.downside_risk_pct = 15.0
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(self._make_card_pack(rr))
+
+        reason = result["score_detail"]["risk_reward_score"]["reason"]
+        assert reason == "风险收益: 上行空间30%，下行风险15%，风险收益比2.0x"
+
+    def test_risk_reward_reason_falls_back_to_formula(self):
+        """When both risk_assessment_reason and summary are empty, use formula."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        rr = _make_fallback_card("risk_reward", "AAPL", "entry_decision")
+        rr.score = 4
+        rr.risk_assessment_reason = None
+        rr.summary = ""
+        rr.reward_risk_ratio = 0.7
+        rr.upside_potential_pct = 10.0
+        rr.downside_risk_pct = 15.0
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(self._make_card_pack(rr))
+
+        reason = result["score_detail"]["risk_reward_score"]["reason"]
+        assert "0.7x" in reason
+        assert "上行" in reason
+
+    def test_extract_major_risks_includes_rr_key_risks(self):
+        """_extract_major_risks should include rr.key_risks."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        rr = _make_fallback_card("risk_reward", "AAPL", "entry_decision")
+        rr.score = 8
+        rr.key_risks = ["估值偏高风险", "行业周期下行风险"]
+        rr.downside_risk_pct = 10.0
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(self._make_card_pack(rr))
+
+        assert "估值偏高风险" in result["major_risks"]
+        assert "行业周期下行风险" in result["major_risks"]
+
+    def test_extract_key_reasons_includes_rr_key_opportunities(self):
+        """_extract_key_reasons should include rr.key_opportunities."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        rr = _make_fallback_card("risk_reward", "AAPL", "entry_decision")
+        rr.score = 8
+        rr.key_opportunities = ["业绩超预期机会", "技术面突破机会"]
+        rr.reward_risk_ratio = 1.5
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(self._make_card_pack(rr))
+
+        assert "业绩超预期机会" in result["key_reasons"]
+        assert "技术面突破机会" in result["key_reasons"]
+
+    def test_extract_key_reasons_uses_opportunities_over_formula(self):
+        """When key_opportunities exist, the fixed ratio formula is skipped."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        rr = _make_fallback_card("risk_reward", "AAPL", "entry_decision")
+        rr.score = 12
+        rr.key_opportunities = ["LLM机会点"]
+        rr.reward_risk_ratio = 2.5
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(self._make_card_pack(rr))
+
+        assert "LLM机会点" in result["key_reasons"]
+        assert all("具吸引力" not in r for r in result["key_reasons"])
+
+
+class TestComposerReasonTruncation:
+    """Tests that score_detail reasons are not prematurely truncated."""
+
+    def test_event_catalyst_reason_preserves_long_summary(self):
+        """Event catalyst reason should not truncate at 80 chars."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        long_summary = (
+            "近期有财报窗口和机构评级变化，存在中等事件催化。"
+            "新闻多为价格波动和分析师评级调整相关，未发现重大负面事件。"
+            "下一次财报预计在2026年7月，目前处于静默期前的观察阶段。"
+            "机构评级整体偏正面，但部分分析师下调了短期目标价。"
+            "社交媒体情绪中性偏正面，无重大舆情风险。"
+        )
+        snapshot = _make_snapshot()
+        evt = _make_fallback_card("event", "AAPL", "entry_decision")
+        evt.score = 4
+        evt.summary = long_summary
+
+        card_pack = TradeDecisionCardPack(
+            decision_type="entry_decision",
+            symbol="AAPL",
+            account_fact_snapshot=snapshot,
+            account_fit_card=_make_fallback_card("account_fit", "AAPL", "entry_decision"),
+            market_trend_card=_make_fallback_card("market_trend", "AAPL", "entry_decision"),
+            fundamental_valuation_card=_make_fallback_card("fundamental", "AAPL", "entry_decision"),
+            event_catalyst_card=evt,
+            risk_reward_card=_make_fallback_card("risk_reward", "AAPL", "entry_decision"),
+        )
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(card_pack)
+
+        reason = result["score_detail"]["event_catalyst_score"]["reason"]
+        # Should contain the tail text, not truncated at 80 chars
+        assert "社交媒体情绪" in reason
+        assert len(reason) > 80
+
+    def test_fundamental_reason_preserves_long_summary(self):
+        """Fundamental reason should not truncate at 100 chars."""
+        from app.services.trade_decision_composer import TradeDecisionComposer
+
+        long_summary = "A" * 300
+        snapshot = _make_snapshot()
+        fund = _make_fallback_card("fundamental", "AAPL", "entry_decision")
+        fund.score = 20
+        fund.summary = long_summary
+
+        card_pack = TradeDecisionCardPack(
+            decision_type="entry_decision",
+            symbol="AAPL",
+            account_fact_snapshot=snapshot,
+            account_fit_card=_make_fallback_card("account_fit", "AAPL", "entry_decision"),
+            market_trend_card=_make_fallback_card("market_trend", "AAPL", "entry_decision"),
+            fundamental_valuation_card=fund,
+            event_catalyst_card=_make_fallback_card("event", "AAPL", "entry_decision"),
+            risk_reward_card=_make_fallback_card("risk_reward", "AAPL", "entry_decision"),
+        )
+
+        composer = TradeDecisionComposer()
+        result = composer.compose(card_pack)
+
+        reason = result["score_detail"]["fundamental_quality_score"]["reason"]
+        # Should contain the full 300-char summary (plus prefix)
+        assert "A" * 200 in reason
+
+    def test_reason_text_helper_empty_text(self):
+        """_reason_text should handle empty/None text gracefully."""
+        from app.services.trade_decision_composer import _reason_text
+
+        assert _reason_text("前缀", None) == "前缀: 暂无说明"
+        assert _reason_text("前缀", "") == "前缀: 暂无说明"
+        assert _reason_text("前缀", "  ") == "前缀: 暂无说明"

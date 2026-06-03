@@ -63,3 +63,14 @@ def test_classify_agent_status_marks_fallback_without_core_evidence_failed() -> 
     }
 
     assert classify_agent_status(document) == "failed"
+
+
+def test_classify_agent_status_keeps_data_limitations_success_without_fallback() -> None:
+    document = {
+        "metadata": build_agent_metadata(agent_mode="agent_v1", graph_version="graph_v1"),
+        "fallback_used": False,
+        "data_limitations": ["MSFT PS TTM数据缺失", "宏观事件和利率汇率数据未提供"],
+        "run_trace": [{"node_name": "persist_daily_review", "status": "success"}],
+    }
+
+    assert classify_agent_status(document) == "success"

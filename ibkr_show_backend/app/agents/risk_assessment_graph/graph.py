@@ -62,6 +62,7 @@ class RiskAssessmentGraphDeps:
     repository: Any
     llm_service: Any
     mcp_adapter: Any = None
+    monitoring_service: Any = None
 
 
 def build_risk_assessment_graph(deps: RiskAssessmentGraphDeps) -> Any:

@@ -53,9 +53,16 @@ ibkr_show_worker/data/
 .idea/
 .vscode/
 .claude/
+CLAUDE.md
+AGENTS.md
 
 # Docker
 docker-compose.override.yml
 
 # Local public mirror workspace
 public_repo_staging/
+
+# Eval roadmap planning docs
+docs/eval-roadmap/
+docs/agent-regression-eval/
+docs/eval-p3-correctness-methodology/

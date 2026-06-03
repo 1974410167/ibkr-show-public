@@ -6,9 +6,10 @@ import { fetchPositionDetail, fetchPositions } from '@/api/positions'
 import { useAccountOverviewData } from '@/composables/accountOverview'
 import ErrorBlock from '@/components/ErrorBlock.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
-import PositionDetailChart from '@/components/PositionDetailChart.vue'
 import PieDistributionCard from '@/components/PieDistributionCard.vue'
+import PositionSimpleDetail from '@/components/PositionSimpleDetail.vue'
 import PositionTable from '@/components/PositionTable.vue'
+import PositionTreemap from '@/components/PositionTreemap.vue'
 import type { AccountOverview } from '@/types/account'
 import type { PositionDetailResponse, PositionItem, PositionListResponse, PositionSummaryResponse } from '@/types/positions'
 
@@ -22,6 +23,7 @@ const errorMessage = ref('')
 const detailDialogVisible = ref(false)
 const detailLoading = ref(false)
 const detailErrorMessage = ref('')
+const activePosition = ref<PositionItem | null>(null)
 const activeDetail = ref<{
   key: string
   symbol: string
@@ -228,6 +230,7 @@ async function openPositionDetail(item: PositionItem): Promise<void> {
   }
 
   const key = `${item.asset_class ?? 'UNKNOWN'}:${symbol}`
+  activePosition.value = item
   activeDetail.value = {
     key,
     symbol,
@@ -266,6 +269,13 @@ async function openPositionDetail(item: PositionItem): Promise<void> {
     <ErrorBlock v-else-if="errorMessage" :message="errorMessage" />
 
     <template v-else>
+      <PositionTreemap
+        v-if="response"
+        :items="response.items"
+        :format-number="formatNumber"
+        @select="openPositionDetail"
+      />
+
       <section class="summary-layout summary-layout--triple">
         <section class="surface-panel">
           <div class="surface-panel__content summary-panel summary-panel--list">
@@ -320,16 +330,17 @@ async function openPositionDetail(item: PositionItem): Promise<void> {
     v-model:visible="detailDialogVisible"
     modal
     :draggable="false"
-    :style="{ width: 'min(1400px, 94vw)' }"
+    :style="{ width: 'min(960px, 94vw)' }"
     class="position-detail-dialog"
-    :header="activeDetail?.symbol ? `${activeDetail.symbol} 股票详情` : '股票详情'"
+    :header="activeDetail?.symbol ? `${activeDetail.symbol} 详情` : '详情'"
   >
     <div class="position-detail-dialog__body">
-      <LoadingBlock v-if="detailLoading" />
-      <ErrorBlock v-else-if="detailErrorMessage" :message="detailErrorMessage" />
-      <PositionDetailChart
-        v-else-if="activeDetail?.detail"
-        :detail="activeDetail.detail"
+      <PositionSimpleDetail
+        v-if="activePosition"
+        :position="activePosition"
+        :detail="activeDetail?.detail ?? null"
+        :loading="detailLoading"
+        :error-message="detailErrorMessage"
         :format-number="formatNumber"
       />
       <div v-else class="empty-state">请选择一只股票</div>
@@ -357,8 +368,43 @@ async function openPositionDetail(item: PositionItem): Promise<void> {
   gap: 0;
 }
 
-:deep(.position-detail-dialog .p-dialog-content) {
-  padding-top: 0;
+:global(.p-dialog-mask) {
+  background: rgba(2, 6, 14, 0.82) !important;
+  backdrop-filter: blur(6px);
+  z-index: 9000 !important;
+}
+
+:global(.position-detail-dialog.p-dialog) {
+  background: #071424 !important;
+  border: 1px solid rgba(86, 213, 255, 0.32);
+  border-radius: 22px;
+  box-shadow:
+    0 32px 96px rgba(0, 0, 0, 0.76),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  overflow: hidden;
+  z-index: 9001 !important;
+}
+
+:global(.position-detail-dialog .p-dialog-header) {
+  background: #091a2f !important;
+  color: var(--color-text-primary);
+  border-bottom: 1px solid rgba(129, 160, 207, 0.24);
+  padding: 1rem 1.25rem;
+}
+
+:global(.position-detail-dialog .p-dialog-content) {
+  background: #071424 !important;
+  color: var(--color-text-primary);
+  padding: 0 1.25rem 1.25rem;
+}
+
+:global(.position-detail-dialog .p-dialog-title) {
+  color: var(--color-text-primary);
+  font-weight: 800;
+}
+
+:global(.position-detail-dialog .p-dialog-header-icon) {
+  color: var(--color-text-primary);
 }
 
 @media (max-width: 1400px) {

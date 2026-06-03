@@ -46,6 +46,9 @@ class Settings:
     es_agent_replay_index: str
     es_agent_eval_case_index: str
     es_agent_eval_run_index: str
+    es_agent_feedback_index: str
+    es_agent_regression_profile_index: str
+    es_agent_regression_gate_report_index: str
     es_risk_assessment_index: str
     es_copilot_session_index: str
     es_copilot_message_index: str
@@ -114,10 +117,13 @@ def get_settings() -> Settings:
         es_daily_position_review_index=os.getenv("ES_DAILY_POSITION_REVIEW_INDEX", "ibkr_daily_position_reviews_v1"),
         es_agent_task_index=os.getenv("ES_AGENT_TASK_INDEX", "ibkr_agent_tasks_v1"),
         es_agent_prompt_index=os.getenv("ES_AGENT_PROMPT_INDEX", "ibkr_agent_prompts"),
-        es_agent_run_trace_index=os.getenv("ES_AGENT_RUN_TRACE_INDEX", "ibkr_agent_run_traces"),
-        es_agent_replay_index=os.getenv("ES_AGENT_REPLAY_INDEX", "ibkr_agent_replay_snapshots"),
+        es_agent_run_trace_index=os.getenv("ES_AGENT_RUN_TRACE_INDEX", "ibkr_agent_run_traces_v2"),
+        es_agent_replay_index=os.getenv("ES_AGENT_REPLAY_INDEX", "ibkr_agent_replay_snapshots_v2"),
         es_agent_eval_case_index=os.getenv("ES_AGENT_EVAL_CASE_INDEX", "ibkr_agent_eval_cases"),
         es_agent_eval_run_index=os.getenv("ES_AGENT_EVAL_RUN_INDEX", "ibkr_agent_eval_runs"),
+        es_agent_feedback_index=os.getenv("ES_AGENT_FEEDBACK_INDEX", "ibkr_agent_feedback"),
+        es_agent_regression_profile_index=os.getenv("ES_AGENT_REGRESSION_PROFILE_INDEX", "ibkr_agent_regression_profiles"),
+        es_agent_regression_gate_report_index=os.getenv("ES_AGENT_REGRESSION_GATE_REPORT_INDEX", "ibkr_agent_regression_gate_reports"),
         es_risk_assessment_index=os.getenv("ES_RISK_ASSESSMENT_INDEX", "ibkr_risk_assessments_v1"),
         es_copilot_session_index=os.getenv("ES_COPILOT_SESSION_INDEX", "ibkr_copilot_sessions_v1"),
         es_copilot_message_index=os.getenv("ES_COPILOT_MESSAGE_INDEX", "ibkr_copilot_messages_v1"),
@@ -159,7 +165,7 @@ def get_settings() -> Settings:
         ibkr_flex_poll_interval_seconds=int(os.getenv("FLEX_POLL_INTERVAL_SECONDS", "10")),
         ibkr_flex_max_poll_retries=int(os.getenv("FLEX_MAX_POLL_RETRIES", "60")),
         redis_url=os.getenv("REDIS_URL", ""),
-        cache_ttl_seconds=int(os.getenv("CACHE_TTL_SECONDS", "86400")),
+        cache_ttl_seconds=int(os.getenv("CACHE_TTL_SECONDS", "3600")),
         cache_key_prefix=os.getenv("CACHE_KEY_PREFIX", "ibkr-show"),
         daily_review_internal_token=os.getenv("DAILY_REVIEW_INTERNAL_TOKEN", ""),
         admin_auth_config_file=os.getenv(

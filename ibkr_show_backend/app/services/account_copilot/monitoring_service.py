@@ -178,7 +178,7 @@ class AccountCopilotMonitoringService:
                 latency_ms=int(result.get("latency_ms") or 0),
                 error_code=result.get("error_code"),
                 error_message=result.get("error_message"),
-                source="probe",
+                source="runtime",
                 metadata={
                     "probe_run_id": probe_run_id or result.get("probe_run_id") or "",
                     "probe_type": result.get("probe_type") or "",
@@ -191,24 +191,24 @@ class AccountCopilotMonitoringService:
                 missing_fields_count=len(result.get("data_limitations") or []),
             )
 
-    def get_monitoring_overview(self, hours: int = 24, bucket: str = "1h", source: str = "runtime") -> dict:
-        tool_metrics = self.repository.query_tool_metrics(hours=hours, bucket=bucket, source=source)
+    def get_monitoring_overview(self, hours: int = 24, bucket: str = "1h") -> dict:
+        tool_metrics = self.repository.query_tool_metrics(hours=hours, bucket=bucket)
         llm_metrics = self.repository.query_llm_metrics(hours=hours, bucket=bucket)
-        failures = self.get_recent_failures(hours=hours, limit=50, source=source)["items"]
+        failures = self.get_recent_failures(hours=hours, limit=50)["items"]
         llm_models = sorted({str(item.get("model") or "unknown") for item in llm_metrics})
         return {
-            "range": {"hours": hours, "bucket": bucket, "source": source},
+            "range": {"hours": hours, "bucket": bucket},
             "ibkr": self._overview_for([item for item in tool_metrics if item.get("tool_domain") == "ibkr"], hours),
             "longbridge": self._overview_for([item for item in tool_metrics if item.get("tool_domain") == "longbridge"], hours),
             "llm": {**self._overview_for(llm_metrics, hours), "models": llm_models},
             "recent_failure_count": len(failures),
-            "last_probe_at": self._latest_created_at([item for item in tool_metrics if item.get("source") == "probe"]),
+            "last_probe_at": self._latest_created_at(tool_metrics),
         }
 
-    def get_tool_metrics(self, hours: int = 24, bucket: str = "1h", source: str = "runtime") -> dict:
-        metrics = self.repository.query_tool_metrics(hours=hours, bucket=bucket, source=source)
+    def get_tool_metrics(self, hours: int = 24, bucket: str = "1h") -> dict:
+        metrics = self.repository.query_tool_metrics(hours=hours, bucket=bucket)
         return {
-            "range": {"hours": hours, "bucket": bucket, "source": source},
+            "range": {"hours": hours, "bucket": bucket},
             "ibkr": {"series": self._series([item for item in metrics if item.get("tool_domain") == "ibkr"], bucket)},
             "longbridge": {"series": self._series([item for item in metrics if item.get("tool_domain") == "longbridge"], bucket)},
         }
@@ -230,8 +230,8 @@ class AccountCopilotMonitoringService:
             ],
         }
 
-    def get_recent_failures(self, hours: int = 24, limit: int = 50, source: str = "runtime") -> dict:
-        failures = self.repository.query_recent_failures(hours=hours, limit=limit, source=source)
+    def get_recent_failures(self, hours: int = 24, limit: int = 50) -> dict:
+        failures = self.repository.query_recent_failures(hours=hours, limit=limit)
         items = []
         for item in failures.get("tool", []):
             items.append(
@@ -266,7 +266,6 @@ class AccountCopilotMonitoringService:
         self,
         *,
         limit: int = 100,
-        source: str = "runtime",
         agent_name: str | None = None,
         tool_domain: str | None = None,
         tool_name: str | None = None,
@@ -274,7 +273,6 @@ class AccountCopilotMonitoringService:
     ) -> dict:
         items = self.repository.query_recent_tool_calls(
             limit=limit,
-            source=source,
             agent_name=agent_name,
             tool_domain=tool_domain,
             tool_name=tool_name,
@@ -319,7 +317,6 @@ class AccountCopilotMonitoringService:
         self,
         *,
         limit: int = 100,
-        source: str = "runtime",
         agent_name: str | None = None,
         contract_name: str | None = None,
         node_name: str | None = None,
@@ -329,7 +326,6 @@ class AccountCopilotMonitoringService:
     ) -> dict:
         items = self.repository.query_recent_structured_output_events(
             limit=limit,
-            source=source,
             agent_name=agent_name,
             contract_name=contract_name,
             node_name=node_name,
@@ -378,13 +374,10 @@ class AccountCopilotMonitoringService:
         self,
         *,
         limit: int = 100,
-        source: str = "runtime",
         agent_name: str | None = None,
         model: str | None = None,
         include_debug: bool = False,
     ) -> dict:
-        if source == "probe":
-            return {"items": []}
         items = self.repository.query_recent_llm_calls(limit=limit, agent_name=agent_name, model=model)
         normalized = [self._public_llm_call(item, include_debug=include_debug) for item in reversed(items)]
         return {"items": self._with_rolling_rates(normalized)}

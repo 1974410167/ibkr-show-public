@@ -309,7 +309,6 @@ export interface CopilotToolReliabilityProbeResponse {
 export interface AgentMonitoringRange {
   hours: number
   bucket: string
-  source?: 'runtime' | 'probe' | 'all' | string
 }
 
 export interface AgentMonitoringStatusSummary {

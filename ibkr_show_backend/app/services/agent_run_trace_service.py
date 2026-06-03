@@ -17,11 +17,7 @@ class AgentRunTraceService:
     def record_trace(self, trace: AgentRunTrace | dict) -> dict:
         payload = trace.to_dict() if isinstance(trace, AgentRunTrace) else sanitize_trace_payload(trace)
         document = self._prepare_document(payload)
-        try:
-            return self.repository.save_trace(document)
-        except Exception as exc:
-            logger.warning("Failed to record AgentRunTrace: %s", exc)
-            return document
+        return self.repository.save_trace(document)
 
     def get_trace(self, run_id: str) -> dict | None:
         return self.repository.get_trace(run_id)

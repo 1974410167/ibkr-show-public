@@ -65,8 +65,55 @@ defineExpose({ registerBlock, expandAll, collapseAll })
 
 <style>
 /* Global overrides for the dialog — not scoped so they apply to PrimeVue portal */
+
+/* Darken the modal mask overlay */
+.harness-detail-dialog.p-dialog .p-dialog-mask {
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+/* Dialog container: opaque background, clear border & shadow */
+.harness-detail-dialog.p-dialog .p-dialog {
+  border: 1px solid rgba(129, 160, 207, 0.24);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55), 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
 .harness-detail-dialog .p-dialog-content {
   padding: 0 !important;
+  background: #07111f;
+}
+
+/* Header bar: opaque, with bottom border */
+.harness-detail-dialog .p-dialog-header {
+  background: #081827;
+  border-bottom: 1px solid rgba(129, 160, 207, 0.2);
+  padding: 14px 20px;
+}
+
+/* Close button in header — make it visible */
+.harness-detail-dialog .p-dialog-header-close {
+  color: var(--color-text-secondary);
+}
+.harness-detail-dialog .p-dialog-header-close:hover {
+  color: var(--color-text-primary);
+}
+
+/* Tables inside the dialog: opaque rows for readability */
+.harness-detail-dialog .harness-table {
+  background: #07111f;
+}
+
+.harness-detail-dialog .harness-table th {
+  background: #0d1e33;
+  color: var(--color-text-secondary);
+}
+
+.harness-detail-dialog .harness-table td {
+  border-bottom: 1px solid rgba(129, 160, 207, 0.12);
+}
+
+.harness-detail-dialog .harness-table tbody tr:hover {
+  background: rgba(19, 42, 70, 0.7);
 }
 </style>
 
@@ -98,13 +145,15 @@ defineExpose({ registerBlock, expandAll, collapseAll })
   padding: 18px 20px;
   display: grid;
   gap: var(--space-4);
+  background: #07111f;
 }
 
 .harness-detail-dialog__footer {
   display: flex;
   justify-content: flex-end;
-  padding-top: 8px;
-  border-top: 1px solid rgba(129, 160, 207, 0.12);
+  padding: 12px 20px;
+  border-top: 1px solid rgba(129, 160, 207, 0.2);
   margin-top: 4px;
+  background: #081827;
 }
 </style>

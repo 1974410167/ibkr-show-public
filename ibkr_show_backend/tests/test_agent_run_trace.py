@@ -5,6 +5,7 @@ from app.agents.agent_run_trace import (
     sanitize_trace_payload,
 )
 from app.services.agent_run_trace_service import AgentRunTraceService
+from app.services.agent_run_trace_repository import AGENT_RUN_TRACE_INDEX_BODY
 
 
 def test_new_agent_run_id_uses_agent_prefix() -> None:
@@ -129,3 +130,22 @@ def test_agent_run_trace_service_records_and_summarizes() -> None:
     assert stored["prompt_keys"] == ["trade_review_main"]
     assert listed["summary"]["run_count"] == 1
     assert listed["summary"]["success_rate"] == 1.0
+
+
+def test_agent_run_trace_v2_mapping_keeps_dynamic_trace_payloads_unindexed() -> None:
+    mappings = AGENT_RUN_TRACE_INDEX_BODY["mappings"]
+    props = mappings["properties"]
+
+    assert mappings["dynamic"] is False
+    assert props["run_id"]["type"] == "keyword"
+    assert props["agent_name"]["type"] == "keyword"
+    assert props["final_status"]["type"] == "keyword"
+    assert props["llm_call_count"]["type"] == "integer"
+    assert props["tool_call_count"]["type"] == "integer"
+    assert props["total_tokens"]["type"] == "long"
+    assert props["node_traces"]["enabled"] is False
+    assert props["llm_calls"]["enabled"] is False
+    assert props["tool_calls"]["enabled"] is False
+    assert props["validation"]["enabled"] is False
+    assert props["quality_score"]["enabled"] is False
+    assert props["metadata"]["enabled"] is False

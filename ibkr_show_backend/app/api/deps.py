@@ -1,5 +1,6 @@
 import logging
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import Cookie, Depends, HTTPException, status
 
@@ -36,8 +37,11 @@ from app.services.agent_run_trace_repository import AgentRunTraceRepository
 from app.services.agent_run_trace_service import AgentRunTraceService
 from app.services.agent_replay_repository import AgentReplayRepository
 from app.services.agent_replay_service import AgentReplayService
-from app.services.agent_eval_repository import EvalCaseRepository, EvalRunRepository
+from app.services.agent_eval_repository import BadCaseFeedbackRepository, EvalCaseRepository, EvalRunRepository, RegressionGateReportRepository, RegressionProfileRepository
 from app.services.agent_eval_service import AgentEvalService
+from app.services.agent_regression_profile_service import RegressionProfileService
+from app.services.agent_change_impact_service import AgentChangeImpactService
+from app.services.agent_regression_gate_service import AgentRegressionGateService
 from app.services.admin_ibkr_service import AdminIBKRService
 from app.services.admin_prompt_repository import AdminPromptRepository
 from app.services.admin_prompt_service import AdminPromptService
@@ -187,11 +191,44 @@ def get_agent_eval_run_repository() -> EvalRunRepository:
     return EvalRunRepository(get_es_client(), get_settings())
 
 
+def get_agent_feedback_repository() -> BadCaseFeedbackRepository:
+    return BadCaseFeedbackRepository(get_es_client(), get_settings())
+
+
 def get_agent_eval_service() -> AgentEvalService:
     return AgentEvalService(
         get_agent_eval_case_repository(),
         get_agent_eval_run_repository(),
         replay_service=get_agent_replay_service(),
+        llm_client=get_llm_service() if get_settings().llm_enable else None,
+        feedback_repository=get_agent_feedback_repository(),
+        llm_call_service=get_llm_call_metrics_service(),
+        run_trace_repository=get_agent_run_trace_repository(),
+    )
+
+
+def get_agent_regression_profile_repository() -> RegressionProfileRepository:
+    return RegressionProfileRepository(get_es_client(), get_settings())
+
+
+def get_agent_regression_profile_service() -> RegressionProfileService:
+    return RegressionProfileService(get_agent_regression_profile_repository())
+
+
+def get_agent_change_impact_service() -> AgentChangeImpactService:
+    repo_root = str(Path(__file__).resolve().parents[2])
+    return AgentChangeImpactService(get_agent_regression_profile_service(), repo_root=repo_root)
+
+
+def get_agent_regression_gate_report_repository() -> RegressionGateReportRepository:
+    return RegressionGateReportRepository(get_es_client(), get_settings())
+
+
+def get_agent_regression_gate_service() -> AgentRegressionGateService:
+    return AgentRegressionGateService(
+        get_agent_change_impact_service(),
+        get_agent_eval_service(),
+        report_repository=get_agent_regression_gate_report_repository(),
     )
 
 
@@ -430,6 +467,9 @@ def get_trade_review_agent() -> TradeReviewAgent:
         prompt_service=get_admin_prompt_service(),
         trace_service=get_agent_run_trace_service(),
         replay_service=get_agent_replay_service(),
+        monitoring_service=get_account_copilot_monitoring_service(
+            repository=get_account_copilot_monitoring_repository(),
+        ),
     )
 
 
@@ -466,6 +506,9 @@ def get_daily_position_review_agent() -> DailyPositionReviewAgent:
         prompt_service=prompt_service,
         trace_service=get_agent_run_trace_service(),
         replay_service=get_agent_replay_service(),
+        monitoring_service=get_account_copilot_monitoring_service(
+            repository=get_account_copilot_monitoring_repository(),
+        ),
     )
 
 
@@ -512,6 +555,9 @@ def get_risk_assessment_agent() -> RiskAssessmentAgent:
         get_llm_service(),
         get_risk_assessment_repository(),
         _get_optional_mcp_adapter(),
+        monitoring_service=get_account_copilot_monitoring_service(
+            repository=get_account_copilot_monitoring_repository(),
+        ),
     )
 
 

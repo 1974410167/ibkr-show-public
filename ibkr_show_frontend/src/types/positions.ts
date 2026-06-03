@@ -12,6 +12,9 @@ export interface PositionItem {
   percent_of_nav: number | null
   average_cost_price: number | null
   cost_basis_money: number | null
+  diluted_cost_amount: number | null
+  diluted_cost_price: number | null
+  diluted_cost_status: string | null
   total_realized_pnl: number | null
   realized_pnl_percent: number | null
   total_unrealized_pnl: number | null

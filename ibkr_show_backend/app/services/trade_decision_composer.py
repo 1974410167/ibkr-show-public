@@ -88,6 +88,13 @@ def normalize_action(raw: str) -> str:
     return normalized if normalized in ALLOWED_ACTIONS else "watchlist"
 
 
+def _reason_text(prefix: str, text: str | None, limit: int = 500) -> str:
+    clean = str(text or "").strip()
+    if not clean:
+        return f"{prefix}: 暂无说明"
+    return f"{prefix}: {clean[:limit]}"
+
+
 def _clean_user_data_limitation(value: str) -> str | None:
     text = value.strip()
     if not text:
@@ -270,7 +277,7 @@ class TradeDecisionComposer:
         # Fundamental quality score (20): from fundamental card
         if fund and fund.score > 0:
             fund_quality_score = min(20, fund.score)
-            fund_quality_reason = f"基本面分析: {fund.summary[:100]}"
+            fund_quality_reason = _reason_text("基本面分析", fund.summary, 500)
         else:
             fund_quality_score = 0
             fund_quality_reason = "基本面数据不可用"
@@ -301,7 +308,7 @@ class TradeDecisionComposer:
         # Trend score (15): from market trend card
         if mkt and mkt.score > 0:
             trend_score = min(15, mkt.score)
-            trend_reason = f"趋势: {mkt.summary[:80]}"
+            trend_reason = _reason_text("趋势", mkt.summary, 500)
         else:
             trend_score = 0
             trend_reason = "趋势数据不可用"
@@ -309,7 +316,7 @@ class TradeDecisionComposer:
         # Account fit score (20): from account fit card
         if acc and acc.score > 0:
             account_fit_score = min(20, acc.score)
-            account_fit_reason = f"账户适配: {acc.summary[:80]}"
+            account_fit_reason = _reason_text("账户适配", acc.summary, 500)
         else:
             account_fit_score = 0
             account_fit_reason = "账户数据不可用"
@@ -317,7 +324,12 @@ class TradeDecisionComposer:
         # Risk/reward score (15): from risk/reward card
         if rr and rr.score > 0:
             risk_reward_score = min(15, rr.score)
-            rr_reason = f"风险收益比 {rr.reward_risk_ratio or 0:.1f}x，上行{(rr.upside_potential_pct or 0):.0f}%，下行{(rr.downside_risk_pct or 0):.0f}%"
+            if getattr(rr, "risk_assessment_reason", None):
+                rr_reason = _reason_text("风险收益", rr.risk_assessment_reason, 500)
+            elif rr.summary:
+                rr_reason = _reason_text("风险收益", rr.summary, 500)
+            else:
+                rr_reason = f"风险收益比 {rr.reward_risk_ratio or 0:.1f}x，上行{(rr.upside_potential_pct or 0):.0f}%，下行{(rr.downside_risk_pct or 0):.0f}%"
         else:
             risk_reward_score = 0
             rr_reason = "风险收益数据不可用"
@@ -337,7 +349,7 @@ class TradeDecisionComposer:
         # Event catalyst score (5): from event card
         if evt and evt.score > 0:
             event_score = min(5, evt.score)
-            event_reason = f"事件催化: {evt.summary[:80]}"
+            event_reason = _reason_text("事件催化", evt.summary, 1000)
         else:
             event_score = 0
             event_reason = "事件数据不可用"
@@ -568,7 +580,9 @@ class TradeDecisionComposer:
         if evt and evt.key_events:
             reasons.extend(evt.key_events[:2])
 
-        if rr and rr.reward_risk_ratio and rr.reward_risk_ratio >= 2.0:
+        if rr and rr.key_opportunities:
+            reasons.extend(rr.key_opportunities[:2])
+        elif rr and rr.reward_risk_ratio and rr.reward_risk_ratio >= 2.0:
             reasons.append(f"风险收益比 {rr.reward_risk_ratio:.1f}x，具吸引力")
 
         if snapshot.is_holding and snapshot.holding_days and snapshot.holding_days > 30:
@@ -592,6 +606,9 @@ class TradeDecisionComposer:
 
         if fund and fund.pe_ttm and fund.pe_ttm > 50:
             risks.append(f"PE估值过高({fund.pe_ttm:.1f})，有估值压缩风险")
+
+        if rr and rr.key_risks:
+            risks.extend(rr.key_risks[:2])
 
         if rr and rr.downside_risk_pct and rr.downside_risk_pct > 20:
             risks.append(f"下行风险较高({rr.downside_risk_pct:.0f}%)")

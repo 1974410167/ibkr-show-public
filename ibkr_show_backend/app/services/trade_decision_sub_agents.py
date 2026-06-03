@@ -27,6 +27,7 @@ from app.agents.trade_decision_structured_outputs import (
     build_event_catalyst_contract,
     build_fundamental_valuation_contract,
     build_market_trend_contract,
+    build_risk_reward_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -1499,7 +1500,18 @@ def _build_deterministic_event_card(snapshot: AccountFactSnapshot, trace: list[d
     )
 
 
-# === RiskRewardSubAgent (no MCP) ===
+# === RiskRewardSubAgent (no MCP, LLM text enhancement only) ===
+
+RISK_REWARD_LLM_SYSTEM_PROMPT = (
+    "你是风险收益分析文案增强器。你只负责用中文解释风险和机会，不能改变核心数值。\n"
+    "系统已经用规则计算好了 score、stance、upside_potential_pct、downside_risk_pct、reward_risk_ratio、max_position_pct、wait_for_pullback。\n"
+    "你只能输出以下字段：summary、key_risks、key_opportunities、risk_assessment_reason、data_limitations。\n"
+    "不要输出或覆盖 score、stance、upside_potential_pct、downside_risk_pct、reward_risk_ratio、max_position_pct、wait_for_pullback。\n"
+    "不要输出买卖指令或仓位建议。\n"
+    "只能输出严格 JSON object，不要 Markdown，不要代码块，不要额外解释。\n"
+    "不确定时填 [] 或 data_limitations，不要编造。\n"
+)
+
 
 class RiskRewardSubAgent:
     """Risk/reward assessment. Reads AccountFactSnapshot + other four cards. No MCP."""
@@ -1518,7 +1530,8 @@ class RiskRewardSubAgent:
         trace = TradeDecisionSubAgentTrace(sub_agent_name="risk_reward", started_at=datetime_now())
         started = time.perf_counter()
         try:
-            card = self._build_card(snapshot, account_fit, market_trend, fundamental, event)
+            base_card = self._build_card(snapshot, account_fit, market_trend, fundamental, event)
+            card = self._enhance_with_llm(snapshot, base_card, account_fit, market_trend, fundamental, event, trace)
             trace.finished_at = datetime_now()
             trace.elapsed_ms = int((time.perf_counter() - started) * 1000)
             trace.status = "completed"
@@ -1531,6 +1544,83 @@ class RiskRewardSubAgent:
             trace.fallback_used = True
             trace.fallback_reason = str(exc)[:200]
             return build_fallback_risk_reward_card(snapshot.symbol, snapshot.decision_type, str(exc)), trace
+
+    def _enhance_with_llm(
+        self,
+        snapshot: AccountFactSnapshot,
+        base_card: RiskRewardCard,
+        account_fit: AccountFitCard | None,
+        market_trend: MarketTrendCard | None,
+        fundamental: FundamentalValuationCard | None,
+        event: EventCatalystCard | None,
+        trace: TradeDecisionSubAgentTrace,
+    ) -> RiskRewardCard:
+        try:
+            user_content = self._build_llm_prompt(snapshot, base_card, account_fit, market_trend, fundamental, event)
+            messages = [
+                {"role": "system", "content": RISK_REWARD_LLM_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ]
+
+            raw_response = str(self.llm_service.chat(
+                messages,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            ))
+
+            contract = build_risk_reward_contract()
+            so_runtime = StructuredOutputRuntime(self.llm_service, default_temperature=0.0)
+            so_result = so_runtime.parse_validate_repair(raw_response, contract)
+
+            trace.structured_output = so_result.metadata
+            trace.rounds_used = 1
+
+            if so_result.ok and so_result.payload is not None:
+                llm_output = so_result.payload
+                base_card.summary = llm_output.get("summary", base_card.summary)
+                base_card.key_risks = llm_output.get("key_risks", base_card.key_risks)
+                base_card.key_opportunities = llm_output.get("key_opportunities", base_card.key_opportunities)
+                base_card.data_limitations = llm_output.get("data_limitations", base_card.data_limitations)
+                base_card.risk_assessment_reason = llm_output.get("risk_assessment_reason") or base_card.risk_assessment_reason
+            else:
+                trace.fallback_used = True
+                trace.fallback_reason = f"risk_reward_llm_enhancement_failed: {so_result.error_code or 'unknown'}"
+                logger.info("RiskReward LLM enhancement failed, using rule-based card: %s", so_result.error_code)
+        except Exception as exc:
+            trace.rounds_used = 1
+            trace.fallback_used = True
+            trace.fallback_reason = f"risk_reward_llm_enhancement_failed: {str(exc)[:150]}"
+            logger.info("RiskReward LLM enhancement exception, using rule-based card: %s", exc)
+
+        return base_card
+
+    def _build_llm_prompt(
+        self,
+        snapshot: AccountFactSnapshot,
+        base_card: RiskRewardCard,
+        account_fit: AccountFitCard | None,
+        market_trend: MarketTrendCard | None,
+        fundamental: FundamentalValuationCard | None,
+        event: EventCatalystCard | None,
+    ) -> str:
+        parts = [
+            f"标的: {snapshot.symbol}",
+            f"决策类型: {snapshot.decision_type}",
+            f"当前价格: {snapshot.current_price}",
+            f"规则计算结果: 上行 {base_card.upside_potential_pct}%，下行 {base_card.downside_risk_pct}%，风险收益比 {base_card.reward_risk_ratio}x",
+            f"规则评分: {base_card.score}/{base_card.max_score}",
+            f"规则立场: {getattr(base_card.stance, 'value', base_card.stance) or 'unknown'}",
+        ]
+        if account_fit:
+            parts.append(f"账户适配: {account_fit.summary}")
+        if market_trend:
+            parts.append(f"市场趋势: {market_trend.summary}")
+        if fundamental:
+            parts.append(f"基本面估值: {fundamental.summary}")
+        if event:
+            parts.append(f"事件催化: {event.summary}")
+        parts.append("请基于以上信息，输出风险收益分析的文案字段（summary、key_risks、key_opportunities、risk_assessment_reason、data_limitations）。")
+        return "\n".join(parts)
 
     def _build_card(
         self,
@@ -1545,7 +1635,6 @@ class RiskRewardSubAgent:
         is_holding = snapshot.is_holding
 
         trend_return = market_trend.recent_return_pct if market_trend and market_trend.recent_return_pct else 0
-        pe = fundamental.pe_ttm if fundamental and fundamental.pe_ttm else 30
 
         if is_holding and avg_cost and avg_cost > 0 and current_price:
             upside = ((current_price * 1.3) - current_price) / current_price * 100

@@ -333,6 +333,7 @@ class RiskRewardCard(BaseTradeDecisionCard):
     position_size_label: str = "unknown"
     key_risks: list[str] = field(default_factory=list)
     key_opportunities: list[str] = field(default_factory=list)
+    risk_assessment_reason: str | None = None
 
     def to_dict(self) -> dict:
         base = super().to_dict()
@@ -345,6 +346,7 @@ class RiskRewardCard(BaseTradeDecisionCard):
             "position_size_label": self.position_size_label,
             "key_risks": self.key_risks,
             "key_opportunities": self.key_opportunities,
+            "risk_assessment_reason": self.risk_assessment_reason,
         })
         return base
 

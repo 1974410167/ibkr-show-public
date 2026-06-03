@@ -94,6 +94,7 @@ class TradeReviewAgent:
         prompt_service=None,
         trace_service=None,
         replay_service=None,
+        monitoring_service=None,
     ) -> None:
         self.evidence_builder = evidence_builder
         self.llm_service = llm_service
@@ -101,6 +102,7 @@ class TradeReviewAgent:
         self.prompt_service = prompt_service
         self.trace_service = trace_service
         self.replay_service = replay_service
+        self._monitoring_service = monitoring_service
         self._graph_runner = None
 
     def _get_graph_runner(self):
@@ -113,6 +115,7 @@ class TradeReviewAgent:
                 prompt_service=self.prompt_service,
                 trace_service=self.trace_service,
                 replay_service=self.replay_service,
+                monitoring_service=self._monitoring_service,
             )
         return self._graph_runner
 

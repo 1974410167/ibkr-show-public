@@ -17,6 +17,7 @@ type SortKey =
   | 'previous_day_change_percent'
   | 'total_realized_pnl'
   | 'total_unrealized_pnl'
+  | 'diluted_cost_price'
   | 'cost_basis_money'
   | 'position_value'
   | 'percent_of_nav'
@@ -28,6 +29,7 @@ const sortableLabels: Record<SortKey, string> = {
   previous_day_change_percent: '日涨跌',
   total_realized_pnl: '已实现盈亏',
   total_unrealized_pnl: '未实现盈亏',
+  diluted_cost_price: '摊薄成本价',
   cost_basis_money: '成本',
   position_value: '持仓市值',
   percent_of_nav: '持仓占比',
@@ -59,6 +61,22 @@ function signedPercentText(value: number | null): string {
   }
   const prefix = value > 0 ? '+' : ''
   return `${prefix}${props.formatNumber(value, 2)}%`
+}
+
+function dilutedCostTitle(item: PositionItem): string {
+  if (item.diluted_cost_status === 'OK') {
+    return `摊薄成本金额 ${props.formatNumber(item.diluted_cost_amount, 2)}`
+  }
+  if (item.diluted_cost_status === 'NO_TRADE_HISTORY') {
+    return '无交易记录，可能为赠股、转仓或公司行动'
+  }
+  if (item.diluted_cost_status === 'QUANTITY_MISMATCH') {
+    return '交易净数量与当前持仓不一致'
+  }
+  if (item.diluted_cost_status === 'INVALID_QUANTITY') {
+    return '当前持仓数量不可用'
+  }
+  return '摊薄成本价不可用'
 }
 
 function setSort(nextKey: SortKey): void {
@@ -130,6 +148,20 @@ function onRowClick(event: { data: PositionItem }): void {
       <Column header="持仓均价" headerClass="table-head--number table-col--price" bodyClass="table-number table-col--price">
         <template #body="{ data }">
           <span class="cell-number">{{ formatNumber(data.average_cost_price, 2) }}</span>
+        </template>
+      </Column>
+
+      <Column headerClass="table-head--number table-col--price" bodyClass="table-number table-col--price">
+        <template #header>
+          <button type="button" class="sort-button" @click="setSort('diluted_cost_price')">
+            <span>{{ sortLabel('diluted_cost_price') }}</span>
+            <span class="sort-button__indicator">{{ sortIndicator('diluted_cost_price') }}</span>
+          </button>
+        </template>
+        <template #body="{ data }">
+          <span class="cell-number" :title="dilutedCostTitle(data)">
+            {{ formatNumber(data.diluted_cost_price, 2) }}
+          </span>
         </template>
       </Column>
 
@@ -255,6 +287,10 @@ function onRowClick(event: { data: PositionItem }): void {
           <strong>{{ formatNumber(item.quantity, 4) }}</strong>
         </div>
         <div class="mobile-data-row">
+          <span>摊薄成本价</span>
+          <strong :title="dilutedCostTitle(item)">{{ formatNumber(item.diluted_cost_price, 2) }}</strong>
+        </div>
+        <div class="mobile-data-row">
           <span>日涨跌</span>
           <strong :class="pnlClass(item.previous_day_change_percent)">{{ signedPercentText(item.previous_day_change_percent) }}</strong>
         </div>
@@ -308,7 +344,7 @@ function onRowClick(event: { data: PositionItem }): void {
 }
 
 .position-datatable :deep(.table-col--symbol) {
-  width: 23%;
+  width: 19%;
 }
 
 .position-datatable :deep(.table-col--qty) {
@@ -316,7 +352,7 @@ function onRowClick(event: { data: PositionItem }): void {
 }
 
 .position-datatable :deep(.table-col--price) {
-  width: 7.5%;
+  width: 7.8%;
 }
 
 .position-datatable :deep(.table-col--day) {
@@ -324,11 +360,11 @@ function onRowClick(event: { data: PositionItem }): void {
 }
 
 .position-datatable :deep(.table-col--pnl) {
-  width: 10%;
+  width: 9.5%;
 }
 
 .position-datatable :deep(.table-col--cost) {
-  width: 9%;
+  width: 8.5%;
 }
 
 .position-datatable :deep(.table-col--value) {

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import get_position_service
+from app.api.deps import get_optional_auth_session, get_position_service
 from app.clients.es_client import ESClientError
+from app.core.auth import AuthSession
 from app.schemas.positions import PositionDetailResponse, PositionListResponse, PositionSummaryResponse
 from app.services.position_service import PositionService
 
@@ -60,10 +61,15 @@ def get_positions_summary(
 def get_position_detail(
     symbol: str = Query(),
     asset_class: str | None = Query(default=None),
+    auth_session: AuthSession | None = Depends(get_optional_auth_session),
     service: PositionService = Depends(get_position_service),
 ) -> PositionDetailResponse:
     try:
-        return service.get_position_detail(symbol=symbol, asset_class=asset_class)
+        return service.get_position_detail(
+            symbol=symbol,
+            asset_class=asset_class,
+            include_trades=auth_session is not None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except ESClientError as exc:

@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 import SymbolInput from '@/components/SymbolInput.vue'
+import { formatLocalDateTime } from '@/utils/dateTime'
 
 import {
   fetchTradeDecisionDetail,
@@ -50,15 +51,15 @@ const entryForm = reactive({
 const decisionMode = ref<DecisionMode>('auto')
 const activeDecisionTab = ref<DecisionTab>('auto')
 
-const scoreDimensions = [
-  ['fundamental_quality_score', '公司质量'],
-  ['valuation_score', '估值质量'],
-  ['trend_score', '趋势强度'],
-  ['account_fit_score', '账户适配'],
-  ['risk_reward_score', '风险收益'],
-  ['review_constraint_score', '复盘约束'],
-  ['event_catalyst_score', '事件催化'],
-] as const
+const scoreDimensions: readonly { key: string; label: string; fullWidth?: boolean }[] = [
+  { key: 'fundamental_quality_score', label: '公司质量' },
+  { key: 'valuation_score', label: '估值质量' },
+  { key: 'trend_score', label: '趋势强度' },
+  { key: 'account_fit_score', label: '账户适配' },
+  { key: 'risk_reward_score', label: '风险收益' },
+  { key: 'review_constraint_score', label: '复盘约束' },
+  { key: 'event_catalyst_score', label: '事件催化', fullWidth: true },
+]
 
 const actionLabels: Record<string, string> = {
   add: '加仓',
@@ -126,7 +127,7 @@ function decisionTypeLabel(value: string): string {
 }
 
 function formatDateTime(value: string): string {
-  return value ? value.slice(0, 19).replace('T', ' ') : '--'
+  return formatLocalDateTime(value) || '--'
 }
 
 async function loadPage(): Promise<void> {
@@ -449,12 +450,20 @@ onBeforeUnmount(() => {
             </div>
 
             <section class="score-grid">
-              <div v-for="[key, label] in scoreDimensions" :key="key" class="score-card">
+              <div
+                v-for="item in scoreDimensions"
+                :key="item.key"
+                class="score-card"
+                :class="{ 'score-card--full': item.fullWidth }"
+              >
                 <div class="score-card__head">
-                  <span>{{ label }}</span>
-                  <strong>{{ selectedDecision.score_detail[key]?.score ?? 0 }}/{{ selectedDecision.score_detail[key]?.max_score ?? 0 }}</strong>
+                  <span>{{ item.label }}</span>
+                  <strong>{{ selectedDecision.score_detail[item.key]?.score ?? 0 }}/{{ selectedDecision.score_detail[item.key]?.max_score ?? 0 }}</strong>
                 </div>
-                <p>{{ selectedDecision.score_detail[key]?.reason ?? '暂无说明' }}</p>
+                <div class="score-card__reason-wrap">
+                  <p class="score-card__reason">{{ selectedDecision.score_detail[item.key]?.reason ?? '暂无说明' }}</p>
+                  <div class="score-card__tooltip">{{ selectedDecision.score_detail[item.key]?.reason ?? '暂无说明' }}</div>
+                </div>
               </div>
             </section>
 
@@ -802,6 +811,52 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
+.score-card--full {
+  grid-column: 1 / -1;
+}
+
+.score-card__reason-wrap {
+  position: relative;
+}
+
+.score-card__reason {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.score-card__tooltip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 10px);
+  z-index: 50;
+  display: none;
+  width: min(720px, calc(100vw - 80px));
+  padding: 12px 14px;
+  border: 1px solid rgba(129, 160, 207, 0.28);
+  border-radius: var(--radius-md);
+  background: rgba(8, 15, 28, 0.98);
+  color: var(--color-text-primary);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.42);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.score-card__reason-wrap:hover .score-card__tooltip {
+  display: block;
+}
+
+.score-card--full .score-card__tooltip {
+  width: min(900px, calc(100vw - 80px));
+}
+
 .advice-grid,
 .insight-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -843,6 +898,14 @@ onBeforeUnmount(() => {
   .advice-grid,
   .insight-grid {
     grid-template-columns: 1fr;
+  }
+
+  .score-card--full {
+    grid-column: auto;
+  }
+
+  .score-card__tooltip {
+    display: none !important;
   }
 
   .decision-detail-header {

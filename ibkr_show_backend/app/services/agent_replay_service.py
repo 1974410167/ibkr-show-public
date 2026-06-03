@@ -17,11 +17,7 @@ class AgentReplayService:
     def record_snapshot(self, snapshot: AgentReplaySnapshot | dict) -> dict:
         payload = snapshot.to_dict() if isinstance(snapshot, AgentReplaySnapshot) else sanitize_replay_payload(snapshot)
         document = self._prepare_document(payload)
-        try:
-            return self.repository.save_snapshot(document)
-        except Exception as exc:
-            logger.warning("Failed to record AgentReplaySnapshot: %s", exc)
-            return document
+        return self.repository.save_snapshot(document)
 
     def get_snapshot(self, replay_id: str) -> dict | None:
         return self.repository.get_snapshot(replay_id)

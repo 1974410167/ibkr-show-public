@@ -53,6 +53,14 @@ class EventCatalystLLMOutput(BaseModel):
     data_limitations: list[str] = Field(default_factory=list)
 
 
+class RiskRewardLLMOutput(BaseModel):
+    summary: str = Field(min_length=1)
+    key_risks: list[str] = Field(default_factory=list)
+    key_opportunities: list[str] = Field(default_factory=list)
+    risk_assessment_reason: str | None = None
+    data_limitations: list[str] = Field(default_factory=list)
+
+
 def build_market_trend_contract() -> StructuredOutputContract:
     return StructuredOutputContract(
         name="trade_decision_market_trend",
@@ -89,6 +97,20 @@ def build_event_catalyst_contract() -> StructuredOutputContract:
         output_model=EventCatalystLLMOutput,
         schema_hint=EventCatalystLLMOutput.model_json_schema(),
         examples=[EVENT_NORMAL_EXAMPLE, EVENT_INSUFFICIENT_DATA_EXAMPLE],
+        max_repair_attempts=1,
+        repair_enabled=True,
+        fallback_enabled=False,
+    )
+
+
+def build_risk_reward_contract() -> StructuredOutputContract:
+    return StructuredOutputContract(
+        name="trade_decision_risk_reward",
+        agent_name="trade_decision",
+        node_name="risk_reward",
+        output_model=RiskRewardLLMOutput,
+        schema_hint=RiskRewardLLMOutput.model_json_schema(),
+        examples=[RISK_REWARD_NORMAL_EXAMPLE, RISK_REWARD_INSUFFICIENT_DATA_EXAMPLE],
         max_repair_attempts=1,
         repair_enabled=True,
         fallback_enabled=False,
@@ -185,4 +207,20 @@ EVENT_INSUFFICIENT_DATA_EXAMPLE = {
     "risk_events": [],
     "score": 2,
     "data_limitations": ["财经日历暂未返回下一次财报日期", "部分新闻缺少摘要或发布时间"],
+}
+
+RISK_REWARD_NORMAL_EXAMPLE = {
+    "summary": "基于当前估值和市场趋势，风险收益比尚可，但下行风险需关注。",
+    "key_risks": ["估值偏高，回调空间较大", "若行业景气度下降，可能面临戴维斯双杀"],
+    "key_opportunities": ["业绩增长预期支撑估值", "技术面短期动能偏强"],
+    "risk_assessment_reason": "风险收益比 1.8x，上行空间有限但下行风险可控。",
+    "data_limitations": [],
+}
+
+RISK_REWARD_INSUFFICIENT_DATA_EXAMPLE = {
+    "summary": "公开市场数据不足，无法可靠评估风险收益，建议等待更多信息。",
+    "key_risks": ["数据不足，风险评估置信度低"],
+    "key_opportunities": [],
+    "risk_assessment_reason": None,
+    "data_limitations": ["行情或基本面数据不完整，风险收益评估受限"],
 }

@@ -75,9 +75,33 @@ def _task_id_from_state(state: dict) -> str | None:
 
 # === Node factories (closure injection) ===
 
+def _record_ibkr_metric(monitoring_service, *, run_id, agent_name, node_name, tool_name, ok, latency_ms, error_message=None, metadata=None):
+    """Record an IBKR data-read metric if monitoring_service is available."""
+    if not monitoring_service:
+        return
+    try:
+        monitoring_service.record_tool_call(
+            run_id=run_id or "",
+            session_id="",
+            tool_name=tool_name,
+            tool_domain="ibkr",
+            ok=ok,
+            latency_ms=latency_ms,
+            source="runtime",
+            agent_name=agent_name,
+            node_name=node_name,
+            error_message=error_message,
+            metadata=metadata or {},
+        )
+    except Exception:
+        pass
+
+
 def make_build_account_facts_node(deps):
     def build_account_facts_node(state: dict) -> dict:
         trace = start_node_trace("build_account_facts")
+        import time as _time
+        _t0 = _time.monotonic()
         try:
             builder = deps.account_facts_builder
             decision_type = state["decision_type"]
@@ -85,6 +109,14 @@ def make_build_account_facts_node(deps):
             question = state.get("user_question")
 
             snapshot = builder.build(decision_type, symbol, question)
+            _latency = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service,
+                run_id=state.get("agent_run_id"), agent_name="trade_decision",
+                node_name="build_account_facts", tool_name="ibkr_build_account_facts",
+                ok=True, latency_ms=_latency,
+                metadata={"decision_type": decision_type, "has_position": snapshot.is_holding},
+            )
 
             warnings: list[str] = []
             data_limitations: list[str] = []
@@ -101,6 +133,13 @@ def make_build_account_facts_node(deps):
             return {**result, "node_traces": [trace]}
         except Exception as exc:
             error_msg = str(exc)[:200]
+            _latency = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service,
+                run_id=state.get("agent_run_id"), agent_name="trade_decision",
+                node_name="build_account_facts", tool_name="ibkr_build_account_facts",
+                ok=False, latency_ms=_latency, error_message=error_msg,
+            )
             trace = finish_node_trace(trace, "failed", error=error_msg)
             return {
                 "errors": [f"build_account_facts: {error_msg}"],
@@ -370,7 +409,17 @@ def make_risk_reward_node(deps):
                 card.summary = strip_thinking_tags(card.summary)
 
             result = {"risk_reward_card": card}
-            trace = finish_node_trace(trace, "success")
+            trace = finish_node_trace(
+                trace,
+                "success",
+                rounds_used=sub_trace.rounds_used,
+                tools_called=sub_trace.tools_called,
+                tool_call_count=sub_trace.tool_call_count,
+                fallback_used=sub_trace.fallback_used,
+                fallback_reason=sub_trace.fallback_reason,
+                structured_output=sub_trace.structured_output,
+                runtime_trace=sub_trace.runtime_trace,
+            )
             return {**result, "node_traces": [trace]}
         except Exception as exc:
             card = build_fallback_risk_reward_card(

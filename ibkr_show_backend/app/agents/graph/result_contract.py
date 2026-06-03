@@ -162,6 +162,4 @@ def classify_agent_status(document: dict) -> str:
     if document.get("fallback_used"):
         core_empty = not (document.get("card_pack") or document.get("evidence_pack") or document.get("subagent_card_pack"))
         return "failed" if core_empty else "completed_with_fallback"
-    if any("fallback" in item.lower() or "缺失" in item for item in limitations):
-        return "partial_success"
     return "success"

@@ -9,6 +9,7 @@ from app.core.config import Settings
 AGENT_RUN_TRACE_INDEX_BODY = {
     "settings": {"number_of_shards": 1, "number_of_replicas": 0},
     "mappings": {
+        "dynamic": False,
         "properties": {
             "run_id": {"type": "keyword"},
             "agent_name": {"type": "keyword"},
@@ -29,13 +30,16 @@ AGENT_RUN_TRACE_INDEX_BODY = {
             "tool_call_count": {"type": "integer"},
             "total_tokens": {"type": "long"},
             "estimated_cost": {"type": "double"},
-            "node_traces": {"type": "object", "enabled": True},
-            "llm_calls": {"type": "object", "enabled": True},
-            "tool_calls": {"type": "object", "enabled": True},
-            "validation": {"type": "object", "enabled": True},
-            "fallback": {"type": "object", "enabled": True},
-            "quality_score": {"type": "object", "enabled": True},
-            "metadata": {"type": "object", "enabled": True},
+            "prompt_metadata": {"type": "object", "enabled": False},
+            "context_manifest": {"type": "object", "enabled": False},
+            "node_traces": {"type": "object", "enabled": False},
+            "llm_calls": {"type": "object", "enabled": False},
+            "tool_calls": {"type": "object", "enabled": False},
+            "validation": {"type": "object", "enabled": False},
+            "repair_attempts": {"type": "object", "enabled": False},
+            "fallback": {"type": "object", "enabled": False},
+            "quality_score": {"type": "object", "enabled": False},
+            "metadata": {"type": "object", "enabled": False},
         }
     },
 }

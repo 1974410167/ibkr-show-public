@@ -57,10 +57,25 @@ from pydantic import ValidationError
 # === Node factories (closure injection) ===
 
 
+def _record_ibkr_metric(monitoring_service, *, run_id, agent_name, node_name, tool_name, ok, latency_ms, error_message=None, metadata=None):
+    if not monitoring_service:
+        return
+    try:
+        monitoring_service.record_tool_call(
+            run_id=run_id or "", session_id="", tool_name=tool_name, tool_domain="ibkr",
+            ok=ok, latency_ms=latency_ms, source="runtime", agent_name=agent_name,
+            node_name=node_name, error_message=error_message, metadata=metadata or {},
+        )
+    except Exception:
+        pass
+
+
 def make_load_trade_facts_node(deps):
     """Load trade facts from evidence builder (IBKR-only, no Longbridge public data)."""
     def load_trade_facts_node(state: dict) -> dict:
         trace = start_node_trace("load_trade_facts")
+        import time as _time
+        _t0 = _time.monotonic()
         try:
             review_type = state["review_type"]
             symbol = state.get("symbol")
@@ -136,6 +151,13 @@ def make_load_trade_facts_node(deps):
                     tc.append({"tool_name": "tool_get_symbol_trades", "success": True})
             elif review_type == "symbol_level_review" and symbol:
                 tc.append({"tool_name": "tool_get_symbol_trades", "success": True})
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            for c in tc:
+                _record_ibkr_metric(
+                    deps.monitoring_service, run_id=state.get("agent_run_id"),
+                    agent_name="trade_review", node_name="load_trade_facts",
+                    tool_name=c["tool_name"], ok=True, latency_ms=latency_ms,
+                )
             trace = finish_node_trace(
                 trace, "success",
                 runtime_trace=result.get("trace") or [],
@@ -146,6 +168,13 @@ def make_load_trade_facts_node(deps):
             return {**result, "node_traces": [trace]}
         except Exception as exc:
             error_msg = str(exc)[:200]
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="trade_review", node_name="load_trade_facts",
+                tool_name="ibkr_load_trade_facts", ok=False, latency_ms=latency_ms,
+                error_message=error_msg,
+            )
             trace = finish_node_trace(trace, "failed", error=error_msg)
             return {
                 "errors": [f"load_trade_facts: {error_msg}"],
@@ -160,17 +189,32 @@ def make_position_node(deps):
     """Fetch current position for the symbol."""
     def position_node(state: dict) -> dict:
         trace = start_node_trace("position_evidence")
+        import time as _time
+        _t0 = _time.monotonic()
         try:
             symbol = state.get("symbol")
             if not symbol:
                 return {"position_evidence": {}, "node_traces": [finish_node_trace(trace, "success")]}
             builder = deps.evidence_builder
             position = builder.tool_get_current_position(symbol)
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="trade_review", node_name="position_evidence",
+                tool_name="ibkr_get_current_position", ok=True, latency_ms=latency_ms,
+            )
             result = {"position_evidence": position}
             tc = [{"tool_name": "tool_get_current_position", "success": True}]
             trace = finish_node_trace(trace, "success", runtime_trace=result.get("trace") or [], tools_called=["tool_get_current_position"], tool_calls=tc, tool_call_count=1)
             return {**result, "node_traces": [trace]}
         except Exception as exc:
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="trade_review", node_name="position_evidence",
+                tool_name="ibkr_get_current_position", ok=False, latency_ms=latency_ms,
+                error_message=str(exc)[:200],
+            )
             trace = finish_node_trace(trace, "fallback", fallback_used=True, fallback_reason=str(exc)[:200])
             return {"position_evidence": {"error": str(exc)[:200]}, "node_traces": [trace]}
     return position_node
@@ -180,16 +224,31 @@ def make_account_node(deps):
     """Fetch account context."""
     def account_node(state: dict) -> dict:
         trace = start_node_trace("account_evidence")
+        import time as _time
+        _t0 = _time.monotonic()
         try:
             builder = deps.evidence_builder
             start_date = state.get("start_date")
             end_date = state.get("end_date")
             account = builder.tool_get_account_context(start_date, end_date)
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="trade_review", node_name="account_evidence",
+                tool_name="ibkr_get_account_context", ok=True, latency_ms=latency_ms,
+            )
             result = {"account_evidence": account}
             tc = [{"tool_name": "tool_get_account_context", "success": True}]
             trace = finish_node_trace(trace, "success", runtime_trace=result.get("trace") or [], tools_called=["tool_get_account_context"], tool_calls=tc, tool_call_count=1)
             return {**result, "node_traces": [trace]}
         except Exception as exc:
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="trade_review", node_name="account_evidence",
+                tool_name="ibkr_get_account_context", ok=False, latency_ms=latency_ms,
+                error_message=str(exc)[:200],
+            )
             trace = finish_node_trace(trace, "fallback", fallback_used=True, fallback_reason=str(exc)[:200])
             return {"account_evidence": {"error": str(exc)[:200]}, "node_traces": [trace]}
     return account_node

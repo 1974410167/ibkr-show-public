@@ -80,6 +80,9 @@ class LLMCallMetricsService:
         )
         return {"items": items, "summary": self._summary(items)}
 
+    def get_call(self, call_id: str) -> dict | None:
+        return self.repository.get_metric(call_id)
+
     def _summary(self, items: list[dict]) -> dict[str, Any]:
         count = len(items)
         latencies = [int(item.get("latency_ms") or 0) for item in items]

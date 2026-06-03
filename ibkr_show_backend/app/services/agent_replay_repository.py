@@ -9,6 +9,7 @@ from app.core.config import Settings
 AGENT_REPLAY_INDEX_BODY = {
     "settings": {"number_of_shards": 1, "number_of_replicas": 0},
     "mappings": {
+        "dynamic": False,
         "properties": {
             "replay_id": {"type": "keyword"},
             "run_id": {"type": "keyword"},
@@ -23,15 +24,15 @@ AGENT_REPLAY_INDEX_BODY = {
             "tool_names": {"type": "keyword"},
             "llm_call_ids": {"type": "keyword"},
             "persisted_document_id": {"type": "keyword"},
-            "request": {"type": "object", "enabled": True},
-            "prompt_refs": {"type": "object", "enabled": True},
-            "model_config": {"type": "object", "enabled": True},
-            "context_snapshot": {"type": "object", "enabled": True},
-            "tool_snapshots": {"type": "object", "enabled": True},
-            "llm_snapshots": {"type": "object", "enabled": True},
-            "final_output": {"type": "object", "enabled": True},
-            "trace_ref": {"type": "object", "enabled": True},
-            "metadata": {"type": "object", "enabled": True},
+            "request": {"type": "object", "enabled": False},
+            "prompt_refs": {"type": "object", "enabled": False},
+            "model_config": {"type": "object", "enabled": False},
+            "context_snapshot": {"type": "object", "enabled": False},
+            "tool_snapshots": {"type": "object", "enabled": False},
+            "llm_snapshots": {"type": "object", "enabled": False},
+            "final_output": {"type": "object", "enabled": False},
+            "trace_ref": {"type": "object", "enabled": False},
+            "metadata": {"type": "object", "enabled": False},
         }
     },
 }

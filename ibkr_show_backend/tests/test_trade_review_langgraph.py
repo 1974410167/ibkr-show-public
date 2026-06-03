@@ -628,6 +628,46 @@ class TestTradeReviewGraphRunner:
         result = runner.generate_symbol_review("AMD.US")
         assert result["fallback_used"] is True
 
+    def test_finalize_does_not_fail_when_replay_snapshot_persist_fails(self):
+        deps = _mock_deps()
+        deps.repository.save_review.side_effect = lambda doc: doc
+        trace_service = MagicMock()
+        replay_service = MagicMock()
+        replay_service.record_snapshot.side_effect = RuntimeError("mapping exploded")
+        runner = TradeReviewGraphRunner(
+            evidence_builder=deps.evidence_builder,
+            llm_service=deps.llm_service,
+            repository=deps.repository,
+            trace_service=trace_service,
+            replay_service=replay_service,
+        )
+        document = {
+            "id": "AMD.US",
+            "review_type": "symbol_level_review",
+            "symbol": "AMD.US",
+            "status": "success",
+            "summary": "ok",
+            "data_limitations": [],
+            "metadata": {},
+            "run_trace": [{"node_name": "persist_trade_review", "status": "success"}],
+        }
+        initial_state = {
+            "review_type": "symbol_level_review",
+            "symbol": "AMD.US",
+            "started_at": "2026-05-20T00:00:00+00:00",
+            "agent_run_id": "trade-review-run-1",
+        }
+
+        result = runner._finalize(document, initial_state, {"node_traces": document["run_trace"]})
+
+        assert result["status"] == "success"
+        assert result["agent_replay"]["persisted"] is False
+        assert "mapping exploded" in result["agent_replay"]["error"]
+        assert any("agent_replay_persist_failed" in item for item in result["data_limitations"])
+        trace_service.record_trace.assert_called_once()
+        replay_service.record_snapshot.assert_called_once()
+        deps.repository.save_review.assert_called_once()
+
 
 # === Thin Façade Tests ===
 

@@ -15,9 +15,11 @@ import {
   seedDefaultAdminPrompts,
   syncCodeDefaultAdminPrompts,
 } from '@/api/adminPrompts'
+import { buildRegressionPayloadFromProfile, getRegressionProfile, runAgentRegressionEval } from '@/api/adminHarness'
 import ErrorBlock from '@/components/ErrorBlock.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import type { PromptDetailResponse, PromptListItem, PromptRuntimeResponse, PromptStatus, PromptVersion } from '@/types/adminPrompts'
+import type { AgentRegressionRunPayload, AgentRegressionRunResponse, RegressionProfile } from '@/types/adminHarness'
 
 const router = useRouter()
 
@@ -39,6 +41,24 @@ const selectedVersion = ref<PromptVersion | null>(null)
 const showDefaultContent = ref(false)
 const draftContent = ref('')
 const changeNote = ref('')
+const regressionRunning = ref(false)
+const regressionResult = ref<AgentRegressionRunResponse | null>(null)
+
+function inferRegressionAgentName(promptKey: string): string | null {
+  if (promptKey.startsWith('trade_decision_')) return 'trade_decision'
+  if (promptKey.startsWith('trade_review_')) return 'trade_review'
+  if (promptKey.startsWith('daily_position_review_')) return 'daily_position_review'
+  if (promptKey.startsWith('account_copilot_')) return 'account_copilot'
+  return null
+}
+
+function getRegressionAgentName(): string | null {
+  return (
+    (detail.value?.definition?.agent_name as string | undefined) ??
+    selectedPrompt.value?.agent_name ??
+    inferRegressionAgentName(selectedKey.value)
+  )
+}
 
 const selectedPrompt = computed(() => prompts.value.find((item) => item.prompt_key === selectedKey.value) ?? null)
 const versions = computed(() => detail.value?.versions ?? [])
@@ -175,6 +195,7 @@ async function saveNewVersion(): Promise<void> {
   saving.value = true
   errorMessage.value = ''
   noticeMessage.value = ''
+  regressionResult.value = null
   try {
     const response = await createAdminPromptVersion(selectedKey.value, {
       content: draftContent.value.trim(),
@@ -182,10 +203,92 @@ async function saveNewVersion(): Promise<void> {
     })
     noticeMessage.value = response.message
     await loadPrompts(selectedKey.value)
+
+    const agentName = getRegressionAgentName()
+    if (!agentName) {
+      noticeMessage.value = response.message + '（无法识别所属 Agent，未触发回归评测）'
+      return
+    }
+    if (!response.prompt) return
+
+    const promptVersion = response.prompt
+    try {
+      const profile = await getRegressionProfile(agentName)
+      if (!profile.enabled) {
+        noticeMessage.value = response.message + `（${agentName} 回归配置已禁用，未触发回归评测）`
+        return
+      }
+      if (!profile.trigger_policy?.on_prompt_save) {
+        noticeMessage.value = response.message + `（${agentName} 回归配置未启用 Prompt 保存触发）`
+        return
+      }
+      const confirmLines = [
+        `Prompt 已保存。是否立即运行 ${agentName} 的回归评测？`,
+        '',
+        '本次回归将使用「回归评测配置」中的默认策略。回归失败不会回滚 Prompt 保存，但会提示 Gate 结果。',
+        '',
+        `Agent：${agentName}`,
+        `模式：${profile.mode === 'live_mock' ? 'Live Mock Eval' : 'Static Eval'}`,
+        `Include Node Eval：${profile.include_node_eval ? '是' : '否'}`,
+      ]
+      if (profile.node_name) confirmLines.push(`Node Name：${profile.node_name}`)
+      confirmLines.push(`Include Judge：${profile.include_judge ? '是' : '否'}`)
+      if (profile.case_tag) confirmLines.push(`Case Tag：${profile.case_tag}`)
+      if (profile.severity) confirmLines.push(`Severity：${profile.severity}`)
+      if (profile.category) confirmLines.push(`Category：${profile.category}`)
+      confirmLines.push(`Limit：${profile.limit}`)
+      const gateDesc: string[] = []
+      if (profile.gate?.fail_on_critical) gateDesc.push('critical 失败阻断')
+      if (profile.gate?.fail_on_high) gateDesc.push('high 失败阻断')
+      if (profile.gate?.min_pass_rate != null) gateDesc.push(`通过率要求 ${Math.round(profile.gate.min_pass_rate * 100)}%`)
+      if (profile.gate?.max_failed != null) gateDesc.push(`最大失败数 ${profile.gate.max_failed}`)
+      if (gateDesc.length) confirmLines.push(`Gate：${gateDesc.join('，')}`)
+
+      if (window.confirm(confirmLines.join('\n'))) {
+        await triggerRegression(agentName, promptVersion)
+      }
+    } catch (profileError: unknown) {
+      if (profileError instanceof Error && profileError.message.includes('404')) {
+        noticeMessage.value = response.message + `（${agentName} 未配置回归评测配置）`
+      } else {
+        noticeMessage.value = response.message + `（读取回归配置失败，未触发回归评测）`
+      }
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保存新版本失败'
   } finally {
     saving.value = false
+  }
+}
+
+async function triggerRegression(agentName: string, promptVersion: PromptVersion): Promise<void> {
+  regressionRunning.value = true
+  regressionResult.value = null
+  errorMessage.value = ''
+  try {
+    const builtPayload = await buildRegressionPayloadFromProfile(agentName, {
+      trigger: 'prompt_save',
+      name: `Prompt regression - ${agentName} - ${promptVersion.prompt_key}`,
+      prompt: {
+        prompt_key: promptVersion.prompt_key,
+        prompt_version: promptVersion.version,
+        prompt_hash: promptVersion.content_hash,
+        saved_at: new Date().toISOString(),
+        source: 'admin_prompt_save',
+      },
+    })
+    const payload = builtPayload as unknown as AgentRegressionRunPayload
+    const result = await runAgentRegressionEval(payload)
+    regressionResult.value = result
+    if (result.gate_result?.passed) {
+      noticeMessage.value = `Prompt 已保存，Agent 回归评测通过。Eval Run: ${result.eval_run.eval_run_id}`
+    } else {
+      noticeMessage.value = `Prompt 已保存，但 Agent 回归评测未通过，请查看失败用例。Eval Run: ${result.eval_run.eval_run_id}`
+    }
+  } catch (error) {
+    errorMessage.value = `Prompt 已保存，但回归评测运行失败：${error instanceof Error ? error.message : String(error)}`
+  } finally {
+    regressionRunning.value = false
   }
 }
 
@@ -376,10 +479,29 @@ onMounted(() => {
                     label="保存为新版本"
                     icon="pi pi-save"
                     class="p-button p-button--accent"
-                    :disabled="!canSaveDraft"
-                    :loading="saving"
+                    :disabled="!canSaveDraft || regressionRunning"
+                    :loading="saving || regressionRunning"
                     @click="saveNewVersion"
                   />
+                </div>
+                <div v-if="regressionRunning" class="prompt-regression-status">
+                  正在运行 Agent 回归评测...
+                </div>
+                <div v-if="regressionResult" class="prompt-regression-result">
+                  <div class="prompt-regression-result__header">
+                    <span>Gate：</span>
+                    <Tag :value="regressionResult.gate_result?.passed ? '通过' : '未通过'" :class="regressionResult.gate_result?.passed ? 'p-tag--positive' : 'p-tag--negative'" />
+                    <span>通过率：{{ ((regressionResult.gate_result?.pass_rate ?? 0) * 100).toFixed(1) }}%</span>
+                    <span>Case 数：{{ regressionResult.selected_case_count ?? '-' }}</span>
+                    <span v-if="regressionResult.eval_run?.summary?.failed_count != null">失败：{{ regressionResult.eval_run.summary.failed_count }}</span>
+                    <span v-if="regressionResult.eval_run?.summary?.error_count != null">错误：{{ regressionResult.eval_run.summary.error_count }}</span>
+                    <span v-if="regressionResult.eval_run?.summary?.critical_failure_count != null">Critical：{{ regressionResult.eval_run.summary.critical_failure_count }}</span>
+                    <span v-if="regressionResult.eval_run?.summary?.high_priority_failure_count != null">High：{{ regressionResult.eval_run.summary.high_priority_failure_count }}</span>
+                    <Button label="查看用例运行记录" icon="pi pi-external-link" class="p-button p-button--ghost" @click="router.push('/admin/harness')" />
+                  </div>
+                  <div v-if="regressionResult.gate_result?.reasons?.length" class="prompt-regression-result__reasons">
+                    <div v-for="reason in regressionResult.gate_result.reasons" :key="reason">- {{ reason }}</div>
+                  </div>
                 </div>
               </section>
 
@@ -655,6 +777,33 @@ onMounted(() => {
 code {
   color: var(--color-accent);
   overflow-wrap: anywhere;
+}
+
+.prompt-regression-status {
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.prompt-regression-result {
+  padding: 12px 14px;
+  border: 1px solid rgba(129, 160, 207, 0.16);
+  border-radius: var(--radius-md);
+  background: rgba(10, 18, 32, 0.46);
+  font-size: 0.85rem;
+}
+
+.prompt-regression-result__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.prompt-regression-result__reasons {
+  margin-top: 0.5rem;
+  color: #f87171;
+  font-size: 0.8rem;
 }
 
 @media (max-width: 1180px) {

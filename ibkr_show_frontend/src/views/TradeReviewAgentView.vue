@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 import SymbolInput from '@/components/SymbolInput.vue'
+import { formatLocalDateTime } from '@/utils/dateTime'
 
 import {
   fetchMistakeSummary,
@@ -114,7 +115,7 @@ function setReviewTab(tab: ReviewTab): void {
 }
 
 function formatDateTime(value: string): string {
-  return value ? value.slice(0, 19).replace('T', ' ') : '--'
+  return formatLocalDateTime(value) || '--'
 }
 
 function ratingClass(rating: string): string {

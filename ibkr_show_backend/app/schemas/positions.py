@@ -15,6 +15,9 @@ class PositionItem(BaseModel):
     percent_of_nav: float | None = None
     average_cost_price: float | None = None
     cost_basis_money: float | None = None
+    diluted_cost_amount: float | None = None
+    diluted_cost_price: float | None = None
+    diluted_cost_status: str | None = None
     total_realized_pnl: float | None = None
     realized_pnl_percent: float | None = None
     total_unrealized_pnl: float | None = None

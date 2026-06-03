@@ -31,12 +31,14 @@ class RiskAssessmentGraphRunner:
         repository: Any,
         llm_service: Any,
         mcp_adapter: Any = None,
+        monitoring_service: Any = None,
     ) -> None:
         self.deps = RiskAssessmentGraphDeps(
             account_facts_builder=account_facts_builder,
             repository=repository,
             llm_service=llm_service,
             mcp_adapter=mcp_adapter,
+            monitoring_service=monitoring_service,
         )
         self.graph = build_risk_assessment_graph(self.deps)
 

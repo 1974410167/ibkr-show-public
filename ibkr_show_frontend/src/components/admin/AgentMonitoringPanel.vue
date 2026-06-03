@@ -17,6 +17,7 @@ import {
 } from '@/api/accountCopilot'
 import ErrorBlock from '@/components/ErrorBlock.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
+import { formatLocalDateTime } from '@/utils/dateTime'
 import type {
   AgentMonitoringOverviewResponse,
   AgentMonitoringStatusSummary,
@@ -31,7 +32,6 @@ import type {
 echarts.use([LineChart, BarChart, ScatterChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
 type ProbeKind = 'mcp' | 'ibkr'
-type MetricSource = 'runtime' | 'probe' | 'all'
 type CallTypeFilter = 'all' | 'mcp' | 'ibkr' | 'llm'
 
 const agentOptions = [
@@ -40,11 +40,6 @@ const agentOptions = [
   { label: 'Account Copilot', value: 'account_copilot' },
   { label: 'Trade Review', value: 'trade_review' },
   { label: 'Daily Review', value: 'daily_review' },
-]
-const sourceOptions: { label: string; value: MetricSource }[] = [
-  { label: 'Runtime', value: 'runtime' },
-  { label: 'Probe', value: 'probe' },
-  { label: 'All', value: 'all' },
 ]
 const typeOptions: { label: string; value: CallTypeFilter }[] = [
   { label: '全部', value: 'all' },
@@ -62,7 +57,6 @@ const errorMessage = ref('')
 const probeMessage = ref('')
 const probing = ref<ProbeKind | null>(null)
 const selectedAgent = ref('')
-const selectedSource = ref<MetricSource>('runtime')
 const selectedType = ref<CallTypeFilter>('all')
 const selectedLimit = ref(100)
 const overview = ref<AgentMonitoringOverviewResponse | null>(null)
@@ -77,13 +71,38 @@ const expandedProbeRow = ref<string | null>(null)
 const ibkrChartRef = ref<HTMLDivElement | null>(null)
 const mcpChartRef = ref<HTMLDivElement | null>(null)
 const llmChartRef = ref<HTMLDivElement | null>(null)
+const llmTokenChartRef = ref<HTMLDivElement | null>(null)
 const soChartRef = ref<HTMLDivElement | null>(null)
 
 let ibkrChart: EChartsType | null = null
 let mcpChart: EChartsType | null = null
 let llmChart: EChartsType | null = null
+let llmTokenChart: EChartsType | null = null
 let soChart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
+
+const METRIC_LABELS: Record<string, string> = {
+  latency_ms: '调用耗时',
+  rolling_success_rate_10: '最近10次成功率',
+  missing_fields_count: '缺失字段数',
+  total_tokens: 'Token 消耗',
+  rolling_repair_rate_10: '最近10次修复率',
+  rolling_fallback_rate_10: '最近10次兜底率',
+  repair_attempts: '修复次数',
+}
+
+function fmtOk(v: unknown): string {
+  return v === true ? '成功' : v === false ? '失败' : '--'
+}
+function fmtBool(v: unknown): string {
+  return v === true ? '是' : v === false ? '否' : '--'
+}
+
+const tooltipBase = {
+  backgroundColor: 'rgba(8, 13, 24, 0.96)',
+  borderColor: 'rgba(129, 160, 207, 0.22)',
+  textStyle: { color: '#dbeafe' },
+}
 
 const ibkrCalls = computed(() => toolCalls.value.filter((item) => item.tool_domain === 'ibkr'))
 const mcpCalls = computed(() => toolCalls.value.filter((item) => item.tool_domain === 'longbridge'))
@@ -133,7 +152,6 @@ const recentFailures = computed(() => {
       node_name: item.node_name,
       name: item.tool_name,
       domain: item.tool_domain,
-      source: item.source,
       error_code: item.error_code || (item.missing_fields_count > 0 ? 'PARTIAL_FIELDS' : item.empty_result ? 'EMPTY_RESULT' : ''),
       error_message: item.error_message || (item.missing_fields_count > 0 ? `缺少字段 ${item.missing_fields_count} 个` : ''),
       latency_ms: item.latency_ms,
@@ -151,7 +169,6 @@ const recentFailures = computed(() => {
       node_name: item.node_name,
       name: item.model,
       domain: 'llm',
-      source: 'runtime',
       error_code: item.error_code || '',
       error_message: item.error_message || '',
       latency_ms: item.latency_ms,
@@ -164,7 +181,7 @@ const recentFailures = computed(() => {
     .slice(0, 80)
 })
 
-watch([selectedAgent, selectedSource, selectedLimit], () => {
+watch([selectedAgent, selectedLimit], () => {
   void loadAll()
 })
 
@@ -184,6 +201,7 @@ onBeforeUnmount(() => {
   ibkrChart?.dispose()
   mcpChart?.dispose()
   llmChart?.dispose()
+  llmTokenChart?.dispose()
   soChart?.dispose()
 })
 
@@ -192,23 +210,19 @@ async function loadAll(): Promise<void> {
   errorMessage.value = ''
   try {
     const agentName = selectedAgent.value || undefined
-    const soSource = selectedSource.value === 'probe' ? 'runtime' : selectedSource.value
     const [overviewResponse, toolResponse, llmResponse, latestResponse, soResponse] = await Promise.all([
-      getAgentMonitoringOverview({ hours: 24, bucket: '1h', source: selectedSource.value }),
+      getAgentMonitoringOverview({ hours: 24, bucket: '1h' }),
       getAgentRecentToolCalls({
         limit: selectedLimit.value,
-        source: selectedSource.value,
         agent_name: agentName,
       }),
       getAgentRecentLlmCalls({
         limit: selectedLimit.value,
-        source: selectedSource.value,
         agent_name: agentName,
       }),
       getToolReliabilityLatest(),
       getStructuredOutputRecent({
         limit: selectedLimit.value,
-        source: soSource as 'runtime' | 'all',
         agent_name: agentName || undefined,
       }).catch(() => ({ items: [] })),
     ])
@@ -222,8 +236,10 @@ async function loadAll(): Promise<void> {
   } finally {
     loading.value = false
     await nextTick()
-    ensureCharts()
-    renderCharts()
+    requestAnimationFrame(() => {
+      ensureCharts()
+      renderCharts()
+    })
   }
 }
 
@@ -249,7 +265,7 @@ async function runOneClickProbe(kind: ProbeKind): Promise<void> {
       `fail ${response.fail}`,
       `skipped ${response.skipped}`,
       `成功率 ${formatPct(response.success_rate)}`,
-      selectedSource.value === 'probe' || selectedSource.value === 'all' ? '已展示在最近调用视图中。' : '切换 Source=all/probe 可查看主动检测调用。',
+      '检测结果已写入监控数据。',
     ].join(' · ')
     await loadAll()
   } catch (error) {
@@ -260,24 +276,27 @@ async function runOneClickProbe(kind: ProbeKind): Promise<void> {
 }
 
 function ensureCharts(): void {
-  // Dispose stale instances whose DOM elements were destroyed by v-if
-  if (ibkrChart && !ibkrChartRef.value) { ibkrChart.dispose(); ibkrChart = null }
-  if (mcpChart && !mcpChartRef.value) { mcpChart.dispose(); mcpChart = null }
-  if (llmChart && !llmChartRef.value) { llmChart.dispose(); llmChart = null }
-  if (soChart && !soChartRef.value) { soChart.dispose(); soChart = null }
+  // Dispose stale instances: ref is null (DOM destroyed by v-if) OR DOM mismatch (ref replaced)
+  if (ibkrChart && (!ibkrChartRef.value || ibkrChart.getDom() !== ibkrChartRef.value)) { ibkrChart.dispose(); ibkrChart = null }
+  if (mcpChart && (!mcpChartRef.value || mcpChart.getDom() !== mcpChartRef.value)) { mcpChart.dispose(); mcpChart = null }
+  if (llmChart && (!llmChartRef.value || llmChart.getDom() !== llmChartRef.value)) { llmChart.dispose(); llmChart = null }
+  if (llmTokenChart && (!llmTokenChartRef.value || llmTokenChart.getDom() !== llmTokenChartRef.value)) { llmTokenChart.dispose(); llmTokenChart = null }
+  if (soChart && (!soChartRef.value || soChart.getDom() !== soChartRef.value)) { soChart.dispose(); soChart = null }
 
   if (!ibkrChart && ibkrChartRef.value) ibkrChart = echarts.init(ibkrChartRef.value, undefined, { renderer: 'canvas' })
   if (!mcpChart && mcpChartRef.value) mcpChart = echarts.init(mcpChartRef.value, undefined, { renderer: 'canvas' })
   if (!llmChart && llmChartRef.value) llmChart = echarts.init(llmChartRef.value, undefined, { renderer: 'canvas' })
+  if (!llmTokenChart && llmTokenChartRef.value) llmTokenChart = echarts.init(llmTokenChartRef.value, undefined, { renderer: 'canvas' })
   if (!soChart && soChartRef.value) soChart = echarts.init(soChartRef.value, undefined, { renderer: 'canvas' })
-  if (!resizeObserver && (ibkrChartRef.value || mcpChartRef.value || llmChartRef.value || soChartRef.value)) {
+  if (!resizeObserver && (ibkrChartRef.value || mcpChartRef.value || llmChartRef.value || llmTokenChartRef.value || soChartRef.value)) {
     resizeObserver = new ResizeObserver(() => {
       ibkrChart?.resize()
       mcpChart?.resize()
       llmChart?.resize()
+      llmTokenChart?.resize()
       soChart?.resize()
     })
-    ;[ibkrChartRef.value, mcpChartRef.value, llmChartRef.value, soChartRef.value].forEach((element) => {
+    ;[ibkrChartRef.value, mcpChartRef.value, llmChartRef.value, llmTokenChartRef.value, soChartRef.value].forEach((element) => {
       if (element) resizeObserver?.observe(element)
     })
   }
@@ -286,194 +305,190 @@ function ensureCharts(): void {
 function renderCharts(): void {
   ensureCharts()
   if (selectedType.value === 'llm') {
-    renderToolChart(ibkrChart, [], 'IBKR 最近调用视图')
-    renderToolChart(mcpChart, [], 'MCP 最近调用视图')
+    renderToolChart(ibkrChart, [], 'IBKR 工具调用稳定性')
+    renderToolChart(mcpChart, [], 'Longbridge MCP 公开数据工具稳定性')
   } else {
-    renderToolChart(ibkrChart, selectedType.value === 'mcp' ? [] : ibkrCalls.value, 'IBKR 最近调用视图')
-    renderToolChart(mcpChart, selectedType.value === 'ibkr' ? [] : mcpCalls.value, 'MCP 最近调用视图')
+    renderToolChart(ibkrChart, selectedType.value === 'mcp' ? [] : ibkrCalls.value, 'IBKR 工具调用稳定性')
+    renderToolChart(mcpChart, selectedType.value === 'ibkr' ? [] : mcpCalls.value, 'Longbridge MCP 公开数据工具稳定性')
   }
-  renderLlmChart(selectedType.value === 'mcp' || selectedType.value === 'ibkr' ? [] : llmCalls.value)
+  const llmData = selectedType.value === 'mcp' || selectedType.value === 'ibkr' ? [] : llmCalls.value
+  renderLlmStabilityChart(llmData)
+  renderLlmTokenChart(llmData)
   renderSoChart(soEvents.value)
 }
 
-function baseChartOption(title: string): Record<string, any> {
-  return {
-    color: ['#60a5fa', '#22c55e', '#f59e0b', '#ef4444'],
-    backgroundColor: 'transparent',
-    title: { text: title, left: 0, top: 0, textStyle: { color: '#dbeafe', fontSize: 14, fontWeight: 700 } },
-    legend: { top: 28, left: 0, textStyle: { color: '#9fb2d1' }, itemWidth: 12, itemHeight: 8 },
-    grid: { left: 48, right: 52, top: 76, bottom: 42 },
-    xAxis: {
-      type: 'category',
-      axisLine: { lineStyle: { color: 'rgba(159, 178, 209, 0.24)' } },
-      axisTick: { show: false },
-      axisLabel: { color: '#9fb2d1' },
-      data: [],
-    },
-    yAxis: { type: 'value', axisLabel: { color: '#9fb2d1' }, splitLine: { lineStyle: { color: 'rgba(129, 160, 207, 0.12)' } } },
-    series: [],
-  }
-}
+const AXIS_STYLE = { color: '#9fb2d1' }
+const SPLIT_LINE = { lineStyle: { color: 'rgba(129, 160, 207, 0.12)' } }
+const AXIS_LINE = { lineStyle: { color: 'rgba(159, 178, 209, 0.24)' } }
 
 function renderToolChart(chart: EChartsType | null, calls: AgentRecentToolCall[], title: string): void {
   if (!chart) return
-  const labels = calls.map((_, index) => `#${index + 1}`)
+  const labels = calls.map((_, i) => `#${i + 1}`)
   chart.setOption({
-    ...baseChartOption(title),
+    color: ['#60a5fa', '#22c55e', '#f59e0b', '#ef4444'],
+    backgroundColor: 'transparent',
+    legend: { top: 6, right: 0, textStyle: { color: '#9fb2d1' }, itemWidth: 12, itemHeight: 8 },
+    grid: { left: 52, right: 60, top: 42, bottom: 42 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(8, 13, 24, 0.96)',
-      borderColor: 'rgba(129, 160, 207, 0.22)',
-      textStyle: { color: '#dbeafe' },
+      ...tooltipBase,
       formatter: (params: any) => {
         const rows = Array.isArray(params) ? params : [params]
-        const index = rows[0]?.dataIndex ?? 0
-        const point = calls[index]
-        if (!point) return '暂无调用'
+        const idx = rows[0]?.dataIndex ?? 0
+        const p = calls[idx]
+        if (!p) return '暂无调用'
         return [
-          `${rows[0]?.axisValue || ''} · ${formatTime(point.created_at)}`,
-          `agent: ${point.agent_name}`,
-          `node: ${point.node_name}`,
-          `tool: ${point.tool_name}`,
-          `ok: ${point.ok}`,
-          `latency: ${formatMs(point.latency_ms)}`,
-          `rolling success: ${formatPct(point.rolling_success_rate_10)} (${point.rolling_window_size})`,
-          `rolling failure: ${formatPct(point.rolling_failure_rate_10)}`,
-          `empty_result: ${point.empty_result}`,
-          `raw_ok: ${point.raw_ok ?? '--'}`,
-          `compact_ok: ${point.compact_ok ?? '--'}`,
-          `parsed_fields: ${point.parsed_fields_count}`,
-          `missing_fields: ${point.missing_fields_count}`,
-          `error_code: ${point.error_code || '--'}`,
-          `error: ${truncateText(point.error_message, 180) || '--'}`,
-        ].join('<br/>')
+          `${rows[0]?.axisValue || ''} · ${formatTime(p.created_at)}`,
+          `Agent: ${p.agent_name}　节点: ${p.node_name}`,
+          `工具: ${p.tool_name}`,
+          `是否成功: ${fmtOk(p.ok)}　调用耗时: ${formatMs(p.latency_ms)}`,
+          `最近10次成功率: ${formatPct(p.rolling_success_rate_10)} (${p.rolling_window_size})`,
+          `最近10次失败率: ${formatPct(p.rolling_failure_rate_10)}`,
+          `是否空结果: ${fmtBool(p.empty_result)}`,
+          `原始调用成功: ${fmtOk(p.raw_ok)}　压缩解析成功: ${fmtOk(p.compact_ok)}`,
+          `已解析字段: ${p.parsed_fields_count}　缺失字段: ${p.missing_fields_count}`,
+          p.error_code ? `错误码: ${p.error_code}` : '',
+          p.error_message ? `错误信息: ${truncateText(p.error_message, 160)}` : '',
+        ].filter(Boolean).join('<br/>')
       },
     },
-    xAxis: { ...baseChartOption(title).xAxis, data: labels },
+    xAxis: { type: 'category', axisLine: AXIS_LINE, axisTick: { show: false }, axisLabel: AXIS_STYLE, data: labels },
     yAxis: [
-      { type: 'value', min: 0, axisLabel: { formatter: '{value}ms', color: '#9fb2d1' }, splitLine: { lineStyle: { color: 'rgba(129, 160, 207, 0.12)' } } },
-      { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%', color: '#9fb2d1' }, splitLine: { show: false } },
+      { type: 'value', min: 0, name: '耗时 / 缺失字段', nameTextStyle: { color: '#9fb2d1', fontSize: 11 }, nameGap: 8, axisLabel: { formatter: '{value}', ...AXIS_STYLE }, splitLine: SPLIT_LINE },
+      { type: 'value', min: 0, max: 100, name: '成功率', nameTextStyle: { color: '#9fb2d1', fontSize: 11 }, nameGap: 8, axisLabel: { formatter: '{value}%', ...AXIS_STYLE }, splitLine: { show: false } },
     ],
     series: [
-      { name: 'latency_ms', type: 'line', yAxisIndex: 0, smooth: true, data: calls.map((item) => item.latency_ms) },
-      { name: 'rolling_success_rate_10', type: 'line', yAxisIndex: 1, smooth: true, data: calls.map((item) => roundPct(item.rolling_success_rate_10)) },
-      { name: 'missing_fields_count', type: 'bar', yAxisIndex: 0, barMaxWidth: 16, data: calls.map((item) => item.missing_fields_count) },
-      {
-        name: '失败/空结果',
-        type: 'scatter',
-        yAxisIndex: 0,
-        symbolSize: 9,
-        data: calls.map((item) => (item.ok === false || item.empty_result || item.compact_ok === false ? item.latency_ms : null)),
-      },
+      { name: METRIC_LABELS.latency_ms, type: 'line', yAxisIndex: 0, smooth: true, data: calls.map((c) => c.latency_ms) },
+      { name: METRIC_LABELS.rolling_success_rate_10, type: 'line', yAxisIndex: 1, smooth: true, data: calls.map((c) => roundPct(c.rolling_success_rate_10)) },
+      { name: METRIC_LABELS.missing_fields_count, type: 'bar', yAxisIndex: 0, barMaxWidth: 16, data: calls.map((c) => c.missing_fields_count) },
+      { name: '异常点', type: 'scatter', yAxisIndex: 0, symbolSize: 9, data: calls.map((c) => (c.ok === false || c.empty_result || c.compact_ok === false ? c.latency_ms : null)) },
     ],
   }, true)
 }
 
-function renderLlmChart(calls: AgentRecentLlmCall[]): void {
+function renderLlmStabilityChart(calls: AgentRecentLlmCall[]): void {
   if (!llmChart) return
-  const labels = calls.map((_, index) => `#${index + 1}`)
+  const labels = calls.map((_, i) => `#${i + 1}`)
   llmChart.setOption({
-    ...baseChartOption('LLM 最近调用视图'),
+    color: ['#60a5fa', '#22c55e', '#ef4444'],
+    backgroundColor: 'transparent',
+    legend: { top: 6, right: 0, textStyle: { color: '#9fb2d1' }, itemWidth: 12, itemHeight: 8 },
+    grid: { left: 52, right: 60, top: 42, bottom: 42 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(8, 13, 24, 0.96)',
-      borderColor: 'rgba(129, 160, 207, 0.22)',
-      textStyle: { color: '#dbeafe' },
+      ...tooltipBase,
       formatter: (params: any) => {
         const rows = Array.isArray(params) ? params : [params]
-        const index = rows[0]?.dataIndex ?? 0
-        const point = calls[index]
-        if (!point) return '暂无调用'
+        const idx = rows[0]?.dataIndex ?? 0
+        const p = calls[idx]
+        if (!p) return '暂无调用'
         return [
-          `${rows[0]?.axisValue || ''} · ${formatTime(point.created_at)}`,
-          `agent: ${point.agent_name}`,
-          `node: ${point.node_name}`,
-          `provider: ${point.provider}`,
-          `model: ${point.model}`,
-          `call_type: ${point.call_type}`,
-          `ok: ${point.ok}`,
-          `latency: ${formatMs(point.latency_ms)}`,
-          `prompt_tokens: ${formatNumber(point.prompt_tokens)}`,
-          `completion_tokens: ${formatNumber(point.completion_tokens)}`,
-          `total_tokens: ${formatNumber(point.total_tokens)}`,
-          `rolling success: ${formatPct(point.rolling_success_rate_10)} (${point.rolling_window_size})`,
-          `error_code: ${point.error_code || '--'}`,
-          `error: ${truncateText(point.error_message, 180) || '--'}`,
+          `${rows[0]?.axisValue || ''} · ${formatTime(p.created_at)}`,
+          `Agent: ${p.agent_name}　节点: ${p.node_name}`,
+          `服务商: ${p.provider}　模型: ${p.model}`,
+          `调用类型: ${p.call_type}`,
+          `是否成功: ${fmtOk(p.ok)}　调用耗时: ${formatMs(p.latency_ms)}`,
+          `输入 Token: ${formatNumber(p.prompt_tokens)}　输出 Token: ${formatNumber(p.completion_tokens)}`,
+          `最近10次成功率: ${formatPct(p.rolling_success_rate_10)} (${p.rolling_window_size})`,
+          p.error_code ? `错误码: ${p.error_code}` : '',
+          p.error_message ? `错误信息: ${truncateText(p.error_message, 160)}` : '',
+        ].filter(Boolean).join('<br/>')
+      },
+    },
+    xAxis: { type: 'category', axisLine: AXIS_LINE, axisTick: { show: false }, axisLabel: AXIS_STYLE, data: labels },
+    yAxis: [
+      { type: 'value', min: 0, name: '耗时 (ms)', nameTextStyle: { color: '#9fb2d1', fontSize: 11 }, nameGap: 8, axisLabel: { formatter: '{value}', ...AXIS_STYLE }, splitLine: SPLIT_LINE },
+      { type: 'value', min: 0, max: 100, name: '成功率', nameTextStyle: { color: '#9fb2d1', fontSize: 11 }, nameGap: 8, axisLabel: { formatter: '{value}%', ...AXIS_STYLE }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: METRIC_LABELS.latency_ms, type: 'line', yAxisIndex: 0, smooth: true, data: calls.map((c) => c.latency_ms) },
+      { name: METRIC_LABELS.rolling_success_rate_10, type: 'line', yAxisIndex: 1, smooth: true, data: calls.map((c) => roundPct(c.rolling_success_rate_10)) },
+      { name: '失败点', type: 'scatter', yAxisIndex: 0, symbolSize: 9, data: calls.map((c) => (c.ok === false ? c.latency_ms : null)) },
+    ],
+  }, true)
+}
+
+function renderLlmTokenChart(calls: AgentRecentLlmCall[]): void {
+  if (!llmTokenChart) return
+  const labels = calls.map((_, i) => `#${i + 1}`)
+  llmTokenChart.setOption({
+    color: ['#a78bfa', '#60a5fa'],
+    backgroundColor: 'transparent',
+    legend: { top: 6, right: 0, textStyle: { color: '#9fb2d1' }, itemWidth: 12, itemHeight: 8 },
+    grid: { left: 60, right: 24, top: 42, bottom: 42 },
+    tooltip: {
+      trigger: 'axis',
+      ...tooltipBase,
+      formatter: (params: any) => {
+        const rows = Array.isArray(params) ? params : [params]
+        const idx = rows[0]?.dataIndex ?? 0
+        const p = calls[idx]
+        if (!p) return '暂无调用'
+        return [
+          `${rows[0]?.axisValue || ''} · ${formatTime(p.created_at)}`,
+          `模型: ${p.model}`,
+          `输入 Token: ${formatNumber(p.prompt_tokens)}`,
+          `输出 Token: ${formatNumber(p.completion_tokens)}`,
+          `总 Token: ${formatNumber(p.total_tokens)}`,
         ].join('<br/>')
       },
     },
-    xAxis: { ...baseChartOption('LLM 最近调用视图').xAxis, data: labels },
+    xAxis: { type: 'category', axisLine: AXIS_LINE, axisTick: { show: false }, axisLabel: AXIS_STYLE, data: labels },
     yAxis: [
-      { type: 'value', min: 0, axisLabel: { formatter: '{value}ms', color: '#9fb2d1' }, splitLine: { lineStyle: { color: 'rgba(129, 160, 207, 0.12)' } } },
-      { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%', color: '#9fb2d1' }, splitLine: { show: false } },
-      { type: 'value', min: 0, axisLabel: { color: '#9fb2d1' }, splitLine: { show: false } },
+      { type: 'value', min: 0, name: 'Token 数', nameTextStyle: { color: '#9fb2d1', fontSize: 11 }, nameGap: 8, axisLabel: { ...AXIS_STYLE }, splitLine: SPLIT_LINE },
     ],
     series: [
-      { name: 'latency_ms', type: 'line', yAxisIndex: 0, smooth: true, data: calls.map((item) => item.latency_ms) },
-      { name: 'rolling_success_rate_10', type: 'line', yAxisIndex: 1, smooth: true, data: calls.map((item) => roundPct(item.rolling_success_rate_10)) },
-      { name: 'total_tokens', type: 'bar', yAxisIndex: 2, barMaxWidth: 16, data: calls.map((item) => item.total_tokens) },
-      { name: '失败', type: 'scatter', yAxisIndex: 0, symbolSize: 9, data: calls.map((item) => (item.ok === false ? item.latency_ms : null)) },
+      { name: '输入 Token', type: 'bar', stack: 'tokens', barMaxWidth: 20, data: calls.map((c) => c.prompt_tokens) },
+      { name: '输出 Token', type: 'bar', stack: 'tokens', barMaxWidth: 20, data: calls.map((c) => c.completion_tokens) },
     ],
   }, true)
 }
 
 function renderSoChart(events: AgentStructuredOutputEvent[]): void {
   if (!soChart) return
-  const labels = events.map((_, index) => `#${index + 1}`)
+  const labels = events.map((_, i) => `#${i + 1}`)
   soChart.setOption({
-    ...baseChartOption('结构化输出最近调用'),
     color: ['#60a5fa', '#22c55e', '#f59e0b', '#ef4444', '#a78bfa'],
+    backgroundColor: 'transparent',
+    legend: { top: 6, right: 0, textStyle: { color: '#9fb2d1' }, itemWidth: 12, itemHeight: 8 },
+    grid: { left: 52, right: 60, top: 42, bottom: 42 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(8, 13, 24, 0.96)',
-      borderColor: 'rgba(129, 160, 207, 0.22)',
-      textStyle: { color: '#dbeafe' },
+      ...tooltipBase,
       formatter: (params: any) => {
         const rows = Array.isArray(params) ? params : [params]
-        const index = rows[0]?.dataIndex ?? 0
-        const point = events[index]
-        if (!point) return '暂无记录'
+        const idx = rows[0]?.dataIndex ?? 0
+        const p = events[idx]
+        if (!p) return '暂无记录'
         return [
-          `${rows[0]?.axisValue || ''} · ${formatTime(point.created_at)}`,
-          `contract: ${point.contract_name}`,
-          `agent: ${point.agent_name}`,
-          `node: ${point.node_name}`,
-          `ok: ${point.ok}`,
-          `repaired: ${point.repaired} (${point.repair_attempts} 次)`,
-          `fallback: ${point.fallback_used}`,
-          `schema_valid: ${point.schema_validation_passed}`,
-          `rolling success: ${formatPct(point.rolling_success_rate_10)}`,
-          `rolling repair: ${formatPct(point.rolling_repair_rate_10)}`,
-          `rolling fallback: ${formatPct(point.rolling_fallback_rate_10)}`,
-          `error_code: ${point.error_code || '--'}`,
-          `error: ${truncateText(point.error_message, 180) || '--'}`,
-          `run_id: ${point.run_id || '--'}`,
-          `task_id: ${point.task_id || '--'}`,
-        ].join('<br/>')
+          `${rows[0]?.axisValue || ''} · ${formatTime(p.created_at)}`,
+          `输出契约: ${p.contract_name}`,
+          `Agent: ${p.agent_name}　节点: ${p.node_name}`,
+          `是否成功: ${fmtOk(p.ok)}`,
+          `是否修复: ${fmtBool(p.repaired)}${p.repaired ? ` (${p.repair_attempts} 次)` : ''}`,
+          `是否兜底: ${fmtBool(p.fallback_used)}`,
+          `Schema 校验: ${fmtOk(p.schema_validation_passed)}`,
+          `最近10次成功率: ${formatPct(p.rolling_success_rate_10)}`,
+          `最近10次修复率: ${formatPct(p.rolling_repair_rate_10)}`,
+          `最近10次兜底率: ${formatPct(p.rolling_fallback_rate_10)}`,
+          p.error_code ? `错误码: ${p.error_code}` : '',
+          p.error_message ? `错误信息: ${truncateText(p.error_message, 160)}` : '',
+          `run_id: ${p.run_id || '--'}`,
+          `task_id: ${p.task_id || '--'}`,
+        ].filter(Boolean).join('<br/>')
       },
     },
-    xAxis: { ...baseChartOption('结构化输出最近调用').xAxis, data: labels },
+    xAxis: { type: 'category', axisLine: AXIS_LINE, axisTick: { show: false }, axisLabel: AXIS_STYLE, data: labels },
     yAxis: [
-      { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%', color: '#9fb2d1' }, splitLine: { lineStyle: { color: 'rgba(129, 160, 207, 0.12)' } } },
-      { type: 'value', min: 0, axisLabel: { color: '#9fb2d1' }, splitLine: { show: false } },
+      { type: 'value', min: 0, max: 100, name: '比例 (%)', nameTextStyle: { color: '#9fb2d1', fontSize: 11 }, nameGap: 8, axisLabel: { formatter: '{value}%', ...AXIS_STYLE }, splitLine: SPLIT_LINE },
+      { type: 'value', min: 0, name: '次数', nameTextStyle: { color: '#9fb2d1', fontSize: 11 }, nameGap: 8, axisLabel: { ...AXIS_STYLE }, splitLine: { show: false } },
     ],
     series: [
-      { name: 'rolling_success_rate_10', type: 'line', yAxisIndex: 0, smooth: true, data: events.map((item) => roundPct(item.rolling_success_rate_10)) },
-      { name: 'rolling_repair_rate_10', type: 'line', yAxisIndex: 0, smooth: true, data: events.map((item) => roundPct(item.rolling_repair_rate_10)) },
-      { name: 'rolling_fallback_rate_10', type: 'line', yAxisIndex: 0, smooth: true, data: events.map((item) => roundPct(item.rolling_fallback_rate_10)) },
-      { name: 'repair_attempts', type: 'bar', yAxisIndex: 1, barMaxWidth: 12, data: events.map((item) => item.repair_attempts) },
-      {
-        name: '状态',
-        type: 'scatter',
-        yAxisIndex: 1,
-        symbolSize: 10,
-        data: events.map((item) => {
-          if (!item.ok) return 1
-          if (item.fallback_used) return 0.8
-          if (item.repaired) return 0.5
-          return 0
-        }),
-      },
+      { name: METRIC_LABELS.rolling_success_rate_10, type: 'line', yAxisIndex: 0, smooth: true, data: events.map((e) => roundPct(e.rolling_success_rate_10)) },
+      { name: METRIC_LABELS.rolling_repair_rate_10, type: 'line', yAxisIndex: 0, smooth: true, data: events.map((e) => roundPct(e.rolling_repair_rate_10)) },
+      { name: METRIC_LABELS.rolling_fallback_rate_10, type: 'line', yAxisIndex: 0, smooth: true, data: events.map((e) => roundPct(e.rolling_fallback_rate_10)) },
+      { name: METRIC_LABELS.repair_attempts, type: 'bar', yAxisIndex: 1, barMaxWidth: 12, data: events.map((e) => e.repair_attempts) },
+      { name: '输出状态', type: 'scatter', yAxisIndex: 1, symbolSize: 10, data: events.map((e) => { if (!e.ok) return 1; if (e.fallback_used) return 0.8; if (e.repaired) return 0.5; return 0 }) },
     ],
   }, true)
 }
@@ -518,8 +533,7 @@ function formatNumber(value: number | null | undefined): string {
 }
 
 function formatTime(value: string | null | undefined): string {
-  if (!value) return '--'
-  return value.slice(0, 19).replace('T', ' ')
+  return formatLocalDateTime(value) || '--'
 }
 
 function timestamp(value: string): number {
@@ -590,7 +604,7 @@ function sanitizeObject(obj: Record<string, any> | null | undefined): Record<str
 }
 
 function emptyHint(kind: string): string {
-  return `当前筛选条件下没有${kind}调用记录。可以切换 Source=all，点击一键检测 MCP / IBKR，或先运行一次 AI 决策任务后刷新。`
+  return `当前筛选条件下没有${kind}调用记录。可以点击一键检测 MCP / IBKR，或先运行一次 AI 决策任务后刷新。`
 }
 
 function failureKey(row: { key: string }): string {
@@ -634,12 +648,6 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
               Agent
               <select v-model="selectedAgent">
                 <option v-for="option in agentOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
-            </label>
-            <label>
-              Source
-              <select v-model="selectedSource">
-                <option v-for="option in sourceOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
               </select>
             </label>
             <label>
@@ -725,16 +733,28 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
 
       <section class="agent-monitoring__chart-grid">
         <article v-if="selectedType === 'all' || selectedType === 'ibkr'" class="agent-monitoring__chart-card">
+          <h4 class="agent-monitoring__chart-title">IBKR 工具调用稳定性</h4>
+          <p class="agent-monitoring__chart-desc">观察账户、持仓、交易等 IBKR 只读工具调用是否成功、耗时是否异常、返回字段是否完整。</p>
           <div v-if="!ibkrCalls.length" class="agent-monitoring__empty-chart">{{ emptyHint(' IBKR 工具') }}</div>
           <div ref="ibkrChartRef" class="agent-monitoring__chart"></div>
         </article>
         <article v-if="selectedType === 'all' || selectedType === 'mcp'" class="agent-monitoring__chart-card">
+          <h4 class="agent-monitoring__chart-title">Longbridge MCP 公开数据工具稳定性</h4>
+          <p class="agent-monitoring__chart-desc">观察行情、新闻、财报等公开市场数据工具调用是否成功、是否返回空结果、耗时是否异常。</p>
           <div v-if="!mcpCalls.length" class="agent-monitoring__empty-chart">{{ emptyHint(' MCP 工具') }}</div>
           <div ref="mcpChartRef" class="agent-monitoring__chart"></div>
         </article>
         <article v-if="selectedType === 'all' || selectedType === 'llm'" class="agent-monitoring__chart-card agent-monitoring__chart-card--wide">
+          <h4 class="agent-monitoring__chart-title">LLM 模型调用稳定性</h4>
+          <p class="agent-monitoring__chart-desc">观察模型调用是否成功、耗时是否异常、失败点是否集中出现。</p>
           <div v-if="!llmCalls.length" class="agent-monitoring__empty-chart">{{ emptyHint(' LLM') }}</div>
           <div ref="llmChartRef" class="agent-monitoring__chart"></div>
+        </article>
+        <article v-if="selectedType === 'all' || selectedType === 'llm'" class="agent-monitoring__chart-card agent-monitoring__chart-card--wide">
+          <h4 class="agent-monitoring__chart-title">LLM Token 消耗</h4>
+          <p class="agent-monitoring__chart-desc">观察每次模型调用的 Token 消耗，帮助判断成本和上下文是否异常膨胀。</p>
+          <div v-if="!llmCalls.length" class="agent-monitoring__empty-chart">{{ emptyHint(' LLM Token') }}</div>
+          <div ref="llmTokenChartRef" class="agent-monitoring__chart"></div>
         </article>
       </section>
 
@@ -742,8 +762,8 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
         <div class="surface-panel__content">
           <div class="section-header">
             <div>
-              <h3 class="panel-title">结构化输出最近调用</h3>
-              <p class="panel-subtitle">每个点代表一次结构化输出处理结果；横轴是最近 N 次调用。</p>
+              <h3 class="panel-title">结构化输出质量</h3>
+              <p class="panel-subtitle">观察 LLM 输出 JSON 后，schema 校验、repair、fallback 是否稳定。</p>
             </div>
             <Tag :value="`${soEvents.length} 条`" severity="info" />
           </div>
@@ -751,6 +771,21 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
             <div ref="soChartRef" class="agent-monitoring__chart"></div>
           </div>
           <div v-else class="empty-state">当前还没有结构化输出监控记录。请先运行一次 Account Copilot / AI 决策 / 每日复盘 / 交易复盘，然后刷新。</div>
+        </div>
+      </section>
+
+      <section class="surface-panel agent-monitoring__legend-panel">
+        <div class="surface-panel__content">
+          <h3 class="panel-title">指标说明</h3>
+          <dl class="agent-monitoring__legend-grid">
+            <div><dt>调用耗时</dt><dd>单次工具或模型调用花费的时间，越高说明越慢。</dd></div>
+            <div><dt>最近10次成功率</dt><dd>以当前点为结尾，向前最多统计10次调用的成功比例，用于观察短期稳定性。</dd></div>
+            <div><dt>缺失字段数</dt><dd>工具返回结果中，预期字段没有被解析到的数量，越高说明数据完整性越差。</dd></div>
+            <div><dt>异常点</dt><dd>调用失败、返回空结果、或解析失败的位置。</dd></div>
+            <div><dt>Token 消耗</dt><dd>一次模型调用使用的输入和输出 token 总数，影响成本和上下文长度。</dd></div>
+            <div><dt>修复率</dt><dd>LLM 输出格式不符合 schema 后，系统尝试修复 JSON 的比例。</dd></div>
+            <div><dt>兜底率</dt><dd>修复失败或数据不足时，系统使用保守 fallback 结果的比例。</dd></div>
+          </dl>
         </div>
       </section>
 
@@ -820,7 +855,6 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
                   <th>错误码</th>
                   <th>错误信息</th>
                   <th>耗时</th>
-                  <th>Source</th>
                   <th>run / task</th>
                 </tr>
               </thead>
@@ -834,11 +868,10 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
                     <td>{{ row.error_code || '--' }}</td>
                     <td>{{ truncateText(row.error_message) || '--' }}</td>
                     <td>{{ formatMs(row.latency_ms) }}</td>
-                    <td>{{ row.source || '--' }}</td>
                     <td class="agent-monitoring__mono">{{ row.run_id || '--' }}<br />{{ row.task_id || '--' }}</td>
                   </tr>
                   <tr v-if="expandedFailure === failureKey(row)" class="agent-monitoring__detail-row">
-                    <td colspan="9">
+                    <td colspan="8">
                       <pre>{{ sanitizeText(row.error_message) || '无错误详情' }}</pre>
                     </td>
                   </tr>
@@ -1054,7 +1087,7 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
 
 .agent-monitoring__chart-card {
   position: relative;
-  min-height: 340px;
+  min-height: 380px;
   border: 1px solid rgba(129, 160, 207, 0.14);
   border-radius: var(--radius-md);
   background: rgba(10, 18, 32, 0.54);
@@ -1063,6 +1096,20 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
 
 .agent-monitoring__chart-card--wide {
   grid-column: 1 / -1;
+}
+
+.agent-monitoring__chart-title {
+  margin: 0 0 2px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.agent-monitoring__chart-desc {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.4;
 }
 
 .agent-monitoring__chart {
@@ -1079,6 +1126,13 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
   text-align: center;
   color: var(--color-text-secondary);
   pointer-events: none;
+}
+
+.agent-monitoring__chart-note {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.4;
 }
 
 .agent-monitoring__table {
@@ -1149,6 +1203,31 @@ function probeStatusSeverity(status: string): 'success' | 'danger' | 'warn' | 's
   border-radius: var(--radius-md);
   color: var(--color-text-secondary);
   text-align: center;
+}
+
+.agent-monitoring__legend-panel {
+  margin-top: 4px;
+}
+
+.agent-monitoring__legend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px 24px;
+  margin: 0;
+}
+
+.agent-monitoring__legend-grid dt {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+
+.agent-monitoring__legend-grid dd {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.45;
 }
 
 @media (max-width: 960px) {

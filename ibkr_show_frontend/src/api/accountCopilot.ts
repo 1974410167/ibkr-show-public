@@ -194,7 +194,7 @@ export function runToolReliabilityProbe(
 }
 
 export function getAgentMonitoringOverview(
-  params: { hours?: number; bucket?: string; source?: 'runtime' | 'probe' | 'all' } = {},
+  params: { hours?: number; bucket?: string } = {},
 ): Promise<AgentMonitoringOverviewResponse> {
   return request<AgentMonitoringOverviewResponse>(
     `/api/agent/account-copilot/monitoring/overview${toQueryString(params)}`,
@@ -202,7 +202,7 @@ export function getAgentMonitoringOverview(
 }
 
 export function getAgentToolMetrics(
-  params: { hours?: number; bucket?: string; source?: 'runtime' | 'probe' | 'all' } = {},
+  params: { hours?: number; bucket?: string } = {},
 ): Promise<AgentToolMetricsResponse> {
   return request<AgentToolMetricsResponse>(
     `/api/agent/account-copilot/monitoring/tool-metrics${toQueryString(params)}`,
@@ -218,7 +218,7 @@ export function getAgentLlmMetrics(
 }
 
 export function getAgentMonitoringFailures(
-  params: { hours?: number; limit?: number; source?: 'runtime' | 'probe' | 'all' } = {},
+  params: { hours?: number; limit?: number } = {},
 ): Promise<AgentMonitoringFailureResponse> {
   return request<AgentMonitoringFailureResponse>(
     `/api/agent/account-copilot/monitoring/failures${toQueryString(params)}`,
@@ -228,7 +228,6 @@ export function getAgentMonitoringFailures(
 export function getAgentRecentToolCalls(
   params: {
     limit?: number
-    source?: 'runtime' | 'probe' | 'all'
     agent_name?: string
     tool_domain?: string
     tool_name?: string
@@ -243,7 +242,6 @@ export function getAgentRecentToolCalls(
 export function getAgentRecentLlmCalls(
   params: {
     limit?: number
-    source?: 'runtime' | 'probe' | 'all'
     agent_name?: string
     model?: string
     include_debug?: boolean
@@ -257,7 +255,6 @@ export function getAgentRecentLlmCalls(
 export function getStructuredOutputRecent(
   params: {
     limit?: number
-    source?: 'runtime' | 'all'
     agent_name?: string
     contract_name?: string
     node_name?: string

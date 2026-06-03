@@ -365,6 +365,52 @@ class TestRiskRewardDataQuality:
         assert rr.score > 0
 
 
+class TestRiskRewardNodeTrace:
+
+    def test_risk_reward_node_trace_has_structured_output_and_rounds(self):
+        """The risk_reward node trace should include structured_output and rounds_used from sub_trace."""
+        from app.agents.trade_decision_graph.nodes import make_risk_reward_node
+
+        snapshot = _make_snapshot()
+        mock_deps = MagicMock()
+        node_fn = make_risk_reward_node(mock_deps)
+
+        state = {
+            "account_fact_snapshot": snapshot,
+            "account_fit_card": AccountFitCard(
+                card_type="account_fit", symbol="AAPL", decision_type="entry_decision",
+                summary="ok", score=16, max_score=20, stance=CardStance.BULLISH,
+                account_fit_level="good", evidence_quality="high", source_tools=[],
+            ),
+            "market_trend_card": MarketTrendCard(
+                card_type="market_trend", symbol="AAPL", decision_type="entry_decision",
+                summary="Bullish", score=12, max_score=15, stance=CardStance.BULLISH,
+                price_trend="bullish", evidence_quality="medium", source_tools=["quote"],
+            ),
+            "fundamental_valuation_card": FundamentalValuationCard(
+                card_type="fundamental_valuation", symbol="AAPL", decision_type="entry_decision",
+                summary="Strong", score=20, max_score=35, stance=CardStance.BULLISH,
+                pe_ttm=22.0, evidence_quality="high", source_tools=["company"],
+            ),
+            "event_catalyst_card": EventCatalystCard(
+                card_type="event_catalyst", symbol="AAPL", decision_type="entry_decision",
+                summary="Good", score=4, max_score=5, stance=CardStance.BULLISH,
+                sentiment="positive", evidence_quality="medium", source_tools=["news_search"],
+            ),
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+            "node_traces": [],
+        }
+
+        result = node_fn(state)
+        node_traces = result.get("node_traces", [])
+        assert len(node_traces) == 1
+        rr_trace = node_traces[0]
+        assert rr_trace["node_name"] == "risk_reward"
+        assert "structured_output" in rr_trace
+        assert "rounds_used" in rr_trace
+
+
 # === Test: Nodes use closure deps, not state _deps ===
 
 class TestNodesClosureDeps:
@@ -774,8 +820,13 @@ class TestSuccessPath:
         result = runner.analyze_entry("AAPL")
         assert result is not None
         assert "id" in result
-        # Verify save was called
-        mock_repo.save_decision.assert_called_once()
+        # Verify save was called: once in persist_decision_node, once in _finalize
+        assert mock_repo.save_decision.call_count == 2
+        # The second call (from _finalize) should have agent_run_id and agent_replay
+        final_doc = mock_repo.save_decision.call_args_list[1][0][0]
+        assert "agent_run_id" in final_doc
+        assert "agent_replay" in final_doc
+        assert "replay_id" in final_doc["agent_replay"]
 
 
 # === Test: Fan-in execution semantics ===
@@ -892,8 +943,8 @@ class TestFanInExecutionSemantics:
         assert evt_gen.call_count == 1, f"event_catalyst called {evt_gen.call_count} times"
         assert rr_gen.call_count == 1, f"risk_reward called {rr_gen.call_count} times"
 
-        # 2. save_decision called exactly once
-        assert mock_repo.save_decision.call_count == 1
+        # 2. save_decision called twice: once in persist_decision_node, once in _finalize
+        assert mock_repo.save_decision.call_count == 2
 
         # 3. Not a fallback
         assert captured_doc.get("fallback_used") is not True
@@ -1010,8 +1061,8 @@ class TestFanInExecutionSemantics:
 
             runner.analyze_entry("AAPL")
 
-        # save_decision called exactly once
-        assert save_count["n"] == 1
+        # save_decision called twice: once in persist_decision_node, once in _finalize
+        assert save_count["n"] == 2
 
     def test_no_fallback_on_success_path(self):
         """Success path should not produce fallback_used=True."""
@@ -1545,3 +1596,107 @@ def test_run_trace_summary_counts_mcp_public_tool_calls():
     assert summary["tool_success_count"] == 4
     assert summary["tool_error_count"] == 1
     assert {item["tool"] for item in summary["tools"]} >= {"company", "institution_rating"}
+
+
+# === Test: Replay persistence in _finalize ===
+
+class TestFinalizeReplayPersistence:
+    """Verify _finalize persists agent_run_id and agent_replay to ES."""
+
+    def test_finalize_saves_agent_run_id_and_replay(self):
+        """_finalize must re-save document with agent_run_id and agent_replay."""
+        from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
+
+        mock_repo = MagicMock()
+        mock_repo.save_decision.side_effect = lambda doc: doc
+        mock_trace_svc = MagicMock()
+        mock_replay_svc = MagicMock()
+        mock_replay_svc.record_snapshot.return_value = {}
+
+        runner = TradeDecisionGraphRunner(
+            account_facts_builder=MagicMock(),
+            llm_service=MagicMock(),
+            repository=mock_repo,
+            trace_service=mock_trace_svc,
+            replay_service=mock_replay_svc,
+        )
+
+        document = {"id": "doc-1", "symbol": "AAPL", "card_pack": {}, "run_trace": []}
+        initial_state = {"agent_run_id": "run-123", "started_at": "2024-01-01T00:00:00Z", "decision_type": "entry_decision", "symbol": "AAPL"}
+        result = runner._finalize(document, initial_state, None)
+
+        assert result["agent_run_id"] == "run-123"
+        assert "replay_id" in result["agent_replay"]
+        assert result["agent_replay"]["run_id"] == "run-123"
+        assert result["agent_replay"]["persisted"] is True
+        # _finalize must have called save_decision
+        assert mock_repo.save_decision.call_count >= 1
+        saved_doc = mock_repo.save_decision.call_args_list[-1][0][0]
+        assert saved_doc["agent_run_id"] == "run-123"
+        assert "replay_id" in saved_doc["agent_replay"]
+
+    def test_finalize_replay_persist_failure_adds_data_limitation(self):
+        """If replay record_snapshot fails, add data_limitation but don't raise."""
+        from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
+
+        mock_repo = MagicMock()
+        mock_repo.save_decision.side_effect = lambda doc: doc
+        mock_replay_svc = MagicMock()
+        mock_replay_svc.record_snapshot.side_effect = RuntimeError("ES connection refused")
+
+        runner = TradeDecisionGraphRunner(
+            account_facts_builder=MagicMock(),
+            llm_service=MagicMock(),
+            repository=mock_repo,
+            replay_service=mock_replay_svc,
+        )
+
+        document = {"id": "doc-2", "symbol": "AAPL", "card_pack": {}, "run_trace": []}
+        initial_state = {"agent_run_id": "run-456", "started_at": "2024-01-01T00:00:00Z", "decision_type": "entry_decision", "symbol": "AAPL"}
+        result = runner._finalize(document, initial_state, None)
+
+        # Should not raise, should record failure
+        assert result["agent_replay"]["persisted"] is False
+        assert "error" in result["agent_replay"]
+        assert any("agent_replay_persist_failed" in item for item in result["data_limitations"])
+
+    def test_finalize_decision_resave_failure_adds_data_limitation(self):
+        """If re-save_decision fails, add data_limitation but don't raise."""
+        from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
+
+        mock_repo = MagicMock()
+        mock_repo.save_decision.side_effect = RuntimeError("ES timeout")
+
+        runner = TradeDecisionGraphRunner(
+            account_facts_builder=MagicMock(),
+            llm_service=MagicMock(),
+            repository=mock_repo,
+        )
+
+        document = {"id": "doc-3", "symbol": "AAPL", "card_pack": {}, "run_trace": []}
+        initial_state = {"agent_run_id": "run-789", "started_at": "2024-01-01T00:00:00Z", "decision_type": "entry_decision", "symbol": "AAPL"}
+        result = runner._finalize(document, initial_state, None)
+
+        # Should not raise
+        assert result["agent_run_id"] == "run-789"
+        assert any("decision_re_save_failed" in item for item in result["data_limitations"])
+
+    def test_finalize_generates_run_id_if_missing(self):
+        """If initial_state has no agent_run_id, _finalize generates one."""
+        from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
+
+        mock_repo = MagicMock()
+        mock_repo.save_decision.side_effect = lambda doc: doc
+
+        runner = TradeDecisionGraphRunner(
+            account_facts_builder=MagicMock(),
+            llm_service=MagicMock(),
+            repository=mock_repo,
+        )
+
+        document = {"id": "doc-4", "symbol": "AAPL", "card_pack": {}, "run_trace": []}
+        initial_state = {"started_at": "2024-01-01T00:00:00Z", "decision_type": "entry_decision", "symbol": "AAPL"}
+        result = runner._finalize(document, initial_state, None)
+
+        assert result["agent_run_id"] is not None
+        assert result["agent_run_id"].startswith("trade_decision_")

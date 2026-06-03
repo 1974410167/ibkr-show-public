@@ -215,9 +215,27 @@ class TradeDecisionGraphRunner:
         )
         trace.metadata["replay_id"] = replay.replay_id
         document["agent_run_trace"] = {"run_id": run_id, "final_status": trace.final_status}
-        document["agent_replay"] = {"replay_id": replay.replay_id}
+        document["agent_replay"] = {"replay_id": replay.replay_id, "run_id": run_id}
+
+        # Record trace and replay snapshot
         if self.trace_service is not None:
-            self.trace_service.record_trace(trace)
+            try:
+                self.trace_service.record_trace(trace)
+            except Exception as exc:
+                document.setdefault("data_limitations", []).append(f"agent_trace_persist_failed: {exc}")
         if self.replay_service is not None:
-            self.replay_service.record_snapshot(replay)
+            try:
+                self.replay_service.record_snapshot(replay)
+                document["agent_replay"]["persisted"] = True
+            except Exception as exc:
+                document["agent_replay"]["persisted"] = False
+                document["agent_replay"]["error"] = str(exc)[:200]
+                document.setdefault("data_limitations", []).append(f"agent_replay_persist_failed: {exc}")
+
+        # Re-save document so agent_run_id / agent_replay / agent_run_trace reach ES
+        try:
+            self.deps.repository.save_decision(document)
+        except Exception as exc:
+            document.setdefault("data_limitations", []).append(f"decision_re_save_failed: {exc}")
+
         return document

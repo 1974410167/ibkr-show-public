@@ -65,6 +65,13 @@ class LLMCallMetricsRepository:
         self.es_client.index_document(index=self.index_name, id=doc["call_id"], document=doc)
         return doc
 
+    def get_metric(self, call_id: str) -> dict | None:
+        try:
+            hit = self.es_client.get(index=self.index_name, id=call_id)
+        except ESIndexNotFoundError:
+            return None
+        return hit.get("_source") if hit else None
+
     def list_recent(
         self,
         *,

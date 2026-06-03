@@ -195,23 +195,22 @@ def test_probe_results_write_tool_metrics_with_probe_source():
 
     docs = list(es.docs["tool-metrics"].values())
     assert len(docs) == 2
-    assert {doc["source"] for doc in docs} == {"probe"}
+    # Probe results now write as source=runtime (unified)
+    assert {doc["source"] for doc in docs} == {"runtime"}
     assert {doc["ok"] for doc in docs} == {True, False}
     assert docs[0]["metadata"]["probe_run_id"] == "probe_run_1"
 
 
-def test_tool_metrics_source_filter_runtime_and_all():
+def test_tool_metrics_returns_all_data():
     service, _es = _service()
     service.record_tool_call(run_id="runtime", session_id="s", tool_name="ibkr_get_positions", ok=True, latency_ms=100)
     service.record_tool_call(run_id="", session_id="", tool_name="ibkr_get_positions", ok=False, latency_ms=300, source="probe")
 
-    runtime = service.get_tool_metrics(hours=24, bucket="1h", source="runtime")
-    all_sources = service.get_tool_metrics(hours=24, bucket="1h", source="all")
+    # Source filtering removed — all queries return all data
+    metrics = service.get_tool_metrics(hours=24, bucket="1h")
 
-    assert runtime["ibkr"]["series"][0]["call_count"] == 1
-    assert runtime["ibkr"]["series"][0]["success_rate"] == 1
-    assert all_sources["ibkr"]["series"][0]["call_count"] == 2
-    assert all_sources["ibkr"]["series"][0]["success_rate"] == 0.5
+    assert metrics["ibkr"]["series"][0]["call_count"] == 2
+    assert metrics["ibkr"]["series"][0]["success_rate"] == 0.5
 
 
 def test_query_recent_tool_calls_filters_and_missing_index_returns_empty():
@@ -260,17 +259,16 @@ def test_query_recent_llm_calls_filters_and_missing_index_returns_empty():
     assert AccountCopilotMonitoringRepository(MissingIndexES(), Settings()).query_recent_llm_calls() == []
 
 
-def test_recent_failures_source_all_includes_probe_failures():
+def test_recent_failures_returns_all_data():
     service, _es = _service()
     service.record_tool_call(run_id="runtime", session_id="s", tool_name="ibkr_get_positions", ok=True, latency_ms=100)
     service.record_tool_call(run_id="", session_id="", tool_name="longbridge_call_public_tool", ok=False, latency_ms=300, source="probe", error_code="PROBE_FAIL")
 
-    runtime = service.get_recent_failures(hours=24, limit=10, source="runtime")
-    all_sources = service.get_recent_failures(hours=24, limit=10, source="all")
+    # Source filtering removed — all queries return all data
+    failures = service.get_recent_failures(hours=24, limit=10)
 
-    assert runtime["items"] == []
-    assert len(all_sources["items"]) == 1
-    assert all_sources["items"][0]["error_code"] == "PROBE_FAIL"
+    assert len(failures["items"]) == 1
+    assert failures["items"][0]["error_code"] == "PROBE_FAIL"
 
 
 def test_recent_tool_calls_have_rolling_rates_and_unknown_defaults():
@@ -290,7 +288,7 @@ def test_recent_tool_calls_have_rolling_rates_and_unknown_defaults():
         }
         es.docs.setdefault("tool-metrics", {})[doc["id"]] = doc
 
-    result = service.get_recent_tool_calls(limit=11, source="runtime", tool_domain="longbridge")
+    result = service.get_recent_tool_calls(limit=11, tool_domain="longbridge")
     items = result["items"]
 
     assert items[0]["rolling_window_size"] == 1

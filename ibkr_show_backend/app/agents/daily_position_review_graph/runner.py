@@ -41,6 +41,7 @@ class DailyPositionReviewGraphRunner:
         prompt_service: Any = None,
         trace_service: Any = None,
         replay_service: Any = None,
+        monitoring_service: Any = None,
     ) -> None:
         from app.services.daily_review_macro_evidence_agent import DailyReviewMacroEvidenceAgent
         from app.services.daily_review_symbol_evidence_agent import DailyReviewSymbolEvidenceAgent
@@ -60,6 +61,7 @@ class DailyPositionReviewGraphRunner:
             symbol_agent=default_symbol_agent,
             macro_agent=default_macro_agent,
             prompt_service=prompt_service,
+            monitoring_service=monitoring_service,
         )
         self.graph = build_daily_position_review_graph(self.deps)
 
@@ -220,9 +222,23 @@ class DailyPositionReviewGraphRunner:
         )
         trace.metadata["replay_id"] = replay.replay_id
         document["agent_run_trace"] = {"run_id": run_id, "final_status": trace.final_status}
-        document["agent_replay"] = {"replay_id": replay.replay_id}
+        document["agent_replay"] = {"replay_id": replay.replay_id, "run_id": run_id}
         if self.trace_service is not None:
-            self.trace_service.record_trace(trace)
+            try:
+                self.trace_service.record_trace(trace)
+            except Exception as exc:
+                document.setdefault("data_limitations", []).append(f"agent_trace_persist_failed: {exc}")
         if self.replay_service is not None:
-            self.replay_service.record_snapshot(replay)
+            try:
+                self.replay_service.record_snapshot(replay)
+                document["agent_replay"]["persisted"] = True
+            except Exception as exc:
+                document["agent_replay"]["persisted"] = False
+                document["agent_replay"]["error"] = str(exc)[:200]
+                document.setdefault("data_limitations", []).append(f"agent_replay_persist_failed: {exc}")
+        if self.trace_service is not None or self.replay_service is not None:
+            try:
+                self.deps.repository.save_review(document)
+            except Exception as exc:
+                document.setdefault("data_limitations", []).append(f"daily_review_re_save_failed: {exc}")
         return document

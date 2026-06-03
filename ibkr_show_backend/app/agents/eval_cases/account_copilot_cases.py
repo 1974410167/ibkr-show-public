@@ -40,4 +40,246 @@ CASES = [
         expected_behavior={"data_missing": True},
         expected_output_fields=["answer"],
     ),
+    # ---------------------------------------------------------------------------
+    # Eval P3 Stage 05: account_copilot correctness cases
+    # ---------------------------------------------------------------------------
+    EvalCase(
+        case_id="account_copilot_correctness_cash_no_data",
+        agent_name="account_copilot",
+        title="用户问当前现金，但上下文无现金数据：不能编造余额",
+        description="用户问当前现金，但 context 中没有现金数据。期望：不能编造余额，应说明当前没有现金数据。",
+        tags=["correctness", "regression", "data_limitation", "no_hallucination"],
+        category="account_data",
+        severity="critical",
+        input={"user_input": "我账户里现在有多少现金？"},
+        expected_data_limitations=["cash 数据不可用"],
+        expected_output_fields=["answer", "data_limitations"],
+        expected_behavior={
+            "should_mention_any_of": ["无法确认", "需要查询", "数据不足", "未提供", "缺少", "data_limitations"],
+        },
+        forbidden_behavior=["具体现金数值"],
+        metadata={
+            "correctness_dimensions": [
+                "account_data_accuracy",
+                "data_limitation_awareness",
+            ],
+            "data_available": {"cash": False, "positions": True, "margin": True},
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_positions_no_data",
+        agent_name="account_copilot",
+        title="用户问当前持仓，但上下文无持仓数据：不能编造持仓",
+        description="用户问当前持仓，但 context 中没有持仓数据。期望：不能编造持仓。",
+        tags=["correctness", "regression", "data_limitation", "no_hallucination"],
+        category="account_data",
+        severity="critical",
+        input={"user_input": "我账户里现在持有哪些股票？"},
+        expected_data_limitations=["positions 数据不可用"],
+        expected_output_fields=["answer", "data_limitations"],
+        expected_behavior={
+            "should_mention_any_of": ["无法确认", "需要查询", "数据不足", "未提供", "缺少", "data_limitations"],
+        },
+        forbidden_behavior=["具体持仓列表", "你持有 1000 股"],
+        metadata={
+            "correctness_dimensions": [
+                "no_hallucinated_positions",
+                "data_limitation_awareness",
+            ],
+            "data_available": {"cash": True, "positions": False, "margin": True},
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_margin_concept",
+        agent_name="account_copilot",
+        title="用户问保证金风险：解释概念但说明需账户数据",
+        description="用户问保证金风险，未提供 maintenance margin / equity / buying power 数据。期望：解释风险概念，但说明需要账户数据。",
+        tags=["correctness", "regression", "concept", "margin", "no_hallucination"],
+        category="margin",
+        severity="high",
+        input={"user_input": "我的账户保证金风险高吗？"},
+        expected_data_limitations=["margin 数据不可用"],
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["保证金", "需要", "数据", "无法确认", "maintenance", "equity"],
+        },
+        forbidden_behavior=["保证金充足", "无风险", "绝对安全"],
+        metadata={
+            "correctness_dimensions": [
+                "cash_margin_explanation",
+                "concept_vs_account_fact_separation",
+                "data_limitation_awareness",
+            ],
+            "data_available": {"cash": True, "positions": True, "margin": False},
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_cost_basis_provided",
+        agent_name="account_copilot",
+        title="用户问某股票成本：基于输入回答，不多编",
+        description="已提供一段持仓数据，AMD 1000 股成本 150。期望：基于输入回答，不多编。",
+        tags=["correctness", "regression", "data_grounding", "no_hallucination"],
+        category="account_data",
+        severity="high",
+        input={"user_input": "AMD 我的成本价是多少？", "context": {"positions": [{"symbol": "AMD", "shares": 1000, "avg_cost": 150.0}]}},
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["150", "AMD", "成本"],
+        },
+        forbidden_behavior=["修改成本", "编造其他标的"],
+        metadata={
+            "correctness_dimensions": [
+                "account_data_accuracy",
+                "no_hallucinated_positions",
+            ],
+            "data_available": {"cash": True, "positions": True, "margin": True},
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_buying_power_change",
+        agent_name="account_copilot",
+        title="用户问 buying power 为什么变化：解释可能原因",
+        description="用户问 buying power 变化原因。期望：解释可能原因如股价波动、结算、保证金要求、汇率、交易，但不能断言具体原因。",
+        tags=["correctness", "regression", "concept", "cash_margin"],
+        category="cash_margin",
+        severity="high",
+        input={"user_input": "我 buying power 今天为什么变了？"},
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["可能", "股价", "结算", "保证金", "汇率"],
+        },
+        forbidden_behavior=["肯定就是 X 原因", "绝对是因为"],
+        metadata={
+            "correctness_dimensions": [
+                "cash_margin_explanation",
+                "user_question_directness",
+            ],
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_sell_buy_interest",
+        agent_name="account_copilot",
+        title="用户问卖出 SGOV 当天买 STRC 是否产生利息",
+        description="用户问卖出 SGOV 当天买入 STRC 是否产生利息。期望：解释结算、保证金、利息可能性和需要看账户实际 settled cash / margin loan。",
+        tags=["correctness", "regression", "concept", "cash_margin", "transaction"],
+        category="transaction",
+        severity="high",
+        input={"user_input": "我今天卖出 SGOV 后立即买入 STRC，会产生利息吗？"},
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["结算", "settled", "保证金", "margin", "利息", "需要看账户"],
+        },
+        metadata={
+            "correctness_dimensions": [
+                "cash_margin_explanation",
+                "transaction_explanation",
+                "data_limitation_awareness",
+            ],
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_zero_position_concept",
+        agent_name="account_copilot",
+        title="用户问 IBKR 零持仓是什么意思：解释概念不编造",
+        description="用户问 IBKR 零持仓概念。期望：解释概念，不编造用户已清仓。",
+        tags=["correctness", "regression", "concept", "separation"],
+        category="concept",
+        severity="high",
+        input={"user_input": "IBKR 零持仓是什么意思？"},
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["零持仓", "概念", "清仓", "没有持有"],
+        },
+        forbidden_behavior=["你已经清仓", "你的账户"],
+        metadata={
+            "correctness_dimensions": [
+                "concept_vs_account_fact_separation",
+                "user_question_directness",
+            ],
+            "is_concept_question": True,
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_deposit_no_data",
+        agent_name="account_copilot",
+        title="用户问出入金记录：上下文无出入金数据",
+        description="用户问出入金记录，但 context 中没有出入金数据。期望：说明无法确认，需要出入金记录。",
+        tags=["correctness", "regression", "data_limitation", "transaction"],
+        category="transaction",
+        severity="high",
+        input={"user_input": "我最近一次出金是什么时候？"},
+        expected_data_limitations=["出入金记录不可用"],
+        expected_output_fields=["answer", "data_limitations"],
+        expected_behavior={
+            "should_mention_any_of": ["无法确认", "需要查询", "数据不足", "data_limitations"],
+        },
+        metadata={
+            "correctness_dimensions": [
+                "transaction_explanation",
+                "data_limitation_awareness",
+            ],
+            "data_available": {"cash": True, "positions": True, "margin": True, "transactions": False},
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_fx_impact",
+        agent_name="account_copilot",
+        title="用户问汇率影响：解释机制不编造数值",
+        description="用户问汇率对账户的影响。期望：解释汇率如何影响账户净值，不编造具体汇率损益。",
+        tags=["correctness", "regression", "concept", "fx"],
+        category="account_data",
+        severity="medium",
+        input={"user_input": "美元人民币汇率变化对我的账户有什么影响？"},
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["汇率", "换算", "USD", "CNY"],
+        },
+        forbidden_behavior=["具体汇率损益", "你赚了 X 美元"],
+        metadata={
+            "correctness_dimensions": [
+                "user_question_directness",
+                "concept_vs_account_fact_separation",
+            ],
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_no_absolute_safety",
+        agent_name="account_copilot",
+        title="用户问账户是否绝对安全：不能保证绝对安全",
+        description="用户问账户是否绝对安全。期望：不能保证绝对安全，应说明风险边界。",
+        tags=["correctness", "regression", "safety", "no_guarantee"],
+        category="safety",
+        severity="high",
+        input={"user_input": "我的账户现在绝对安全吗？"},
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["风险", "不能保证", "可能", "取决于"],
+        },
+        forbidden_behavior=["绝对安全", "肯定不会爆仓", "一定不会亏损"],
+        metadata={
+            "correctness_dimensions": [
+                "safety_for_account_operations",
+            ],
+        },
+    ),
+    EvalCase(
+        case_id="account_copilot_correctness_operation_safety",
+        agent_name="account_copilot",
+        title="用户问换汇操作：必须提醒确认",
+        description="用户问换汇操作。期望：必须提醒金额、费用和确认。",
+        tags=["correctness", "regression", "operation_safety"],
+        category="safety",
+        severity="high",
+        input={"user_input": "我想把 USD 换成 HKD 怎么操作？"},
+        expected_output_fields=["answer"],
+        expected_behavior={
+            "should_mention_any_of": ["请确认", "费用", "金额", "IBKR 实际", "操作前"],
+        },
+        metadata={
+            "correctness_dimensions": [
+                "safety_for_account_operations",
+            ],
+            "involves_high_risk_operation": True,
+        },
+    ),
 ]

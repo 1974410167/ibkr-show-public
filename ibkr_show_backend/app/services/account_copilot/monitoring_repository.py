@@ -126,8 +126,8 @@ class AccountCopilotMonitoringRepository:
         self.es_client.index_document(index=self.settings.es_copilot_llm_call_metrics_index, id=doc["id"], document=doc)
         return doc
 
-    def query_tool_metrics(self, hours: int = 24, bucket: str = "1h", source: str = "runtime") -> list[dict]:
-        return self._search_recent(self.settings.es_copilot_tool_call_metrics_index, hours, source=source)
+    def query_tool_metrics(self, hours: int = 24, bucket: str = "1h") -> list[dict]:
+        return self._search_recent(self.settings.es_copilot_tool_call_metrics_index, hours)
 
     def query_llm_metrics(self, hours: int = 24, bucket: str = "1h") -> list[dict]:
         return self._search_recent(self.settings.es_copilot_llm_call_metrics_index, hours)
@@ -136,14 +136,11 @@ class AccountCopilotMonitoringRepository:
         self,
         *,
         limit: int = 100,
-        source: str = "runtime",
         agent_name: str | None = None,
         tool_domain: str | None = None,
         tool_name: str | None = None,
     ) -> list[dict]:
         filters: list[dict] = []
-        if source in {"runtime", "probe"}:
-            filters.append({"term": {"source": source}})
         if agent_name:
             filters.append({"term": {"agent_name": agent_name}})
         if tool_domain:
@@ -166,10 +163,10 @@ class AccountCopilotMonitoringRepository:
             filters.append({"term": {"model": model}})
         return self._search_with_filters(self.settings.es_copilot_llm_call_metrics_index, filters, limit=limit)
 
-    def query_recent_failures(self, hours: int = 24, limit: int = 50, source: str = "runtime") -> dict[str, list[dict]]:
+    def query_recent_failures(self, hours: int = 24, limit: int = 50) -> dict[str, list[dict]]:
         return {
-            "tool": self._search_recent(self.settings.es_copilot_tool_call_metrics_index, hours, ok=False, limit=limit, source=source),
-            "llm": [] if source == "probe" else self._search_recent(self.settings.es_copilot_llm_call_metrics_index, hours, ok=False, limit=limit),
+            "tool": self._search_recent(self.settings.es_copilot_tool_call_metrics_index, hours, ok=False, limit=limit),
+            "llm": self._search_recent(self.settings.es_copilot_llm_call_metrics_index, hours, ok=False, limit=limit),
         }
 
     def _search_recent(
@@ -179,13 +176,10 @@ class AccountCopilotMonitoringRepository:
         *,
         ok: bool | None = None,
         limit: int = 10000,
-        source: str | None = None,
     ) -> list[dict]:
         filters: list[dict] = [{"range": {"created_at": {"gte": since_iso(hours)}}}]
         if ok is not None:
             filters.append({"term": {"ok": ok}})
-        if source in {"runtime", "probe"}:
-            filters.append({"term": {"source": source}})
         try:
             response = self.es_client.search(
                 index=index,
@@ -237,7 +231,6 @@ class AccountCopilotMonitoringRepository:
         self,
         *,
         limit: int = 100,
-        source: str = "runtime",
         agent_name: str | None = None,
         contract_name: str | None = None,
         node_name: str | None = None,
@@ -246,8 +239,6 @@ class AccountCopilotMonitoringRepository:
         fallback_used: bool | None = None,
     ) -> list[dict]:
         filters: list[dict] = []
-        if source in {"runtime", "replay", "probe"}:
-            filters.append({"term": {"source": source}})
         if agent_name:
             filters.append({"term": {"agent_name": agent_name}})
         if contract_name:

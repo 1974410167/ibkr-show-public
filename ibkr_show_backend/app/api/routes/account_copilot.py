@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from statistics import mean
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -262,22 +262,20 @@ def run_tool_reliability_probe(
 def get_copilot_monitoring_overview(
     hours: int = Query(default=24, ge=1, le=168),
     bucket: str = Query(default="1h"),
-    source: Literal["runtime", "probe", "all"] = Query(default="runtime"),
     _auth_session: AuthSession = Depends(require_authenticated_session),
     monitoring_service: AccountCopilotMonitoringService = Depends(get_account_copilot_monitoring_service),
 ) -> dict:
-    return monitoring_service.get_monitoring_overview(hours=hours, bucket=bucket, source=source)
+    return monitoring_service.get_monitoring_overview(hours=hours, bucket=bucket)
 
 
 @router.get("/monitoring/tool-metrics")
 def get_copilot_tool_metrics(
     hours: int = Query(default=24, ge=1, le=168),
     bucket: str = Query(default="1h"),
-    source: Literal["runtime", "probe", "all"] = Query(default="runtime"),
     _auth_session: AuthSession = Depends(require_authenticated_session),
     monitoring_service: AccountCopilotMonitoringService = Depends(get_account_copilot_monitoring_service),
 ) -> dict:
-    return monitoring_service.get_tool_metrics(hours=hours, bucket=bucket, source=source)
+    return monitoring_service.get_tool_metrics(hours=hours, bucket=bucket)
 
 
 @router.get("/monitoring/llm-metrics")
@@ -294,17 +292,15 @@ def get_copilot_llm_metrics(
 def get_copilot_monitoring_failures(
     hours: int = Query(default=24, ge=1, le=168),
     limit: int = Query(default=50, ge=1, le=200),
-    source: Literal["runtime", "probe", "all"] = Query(default="runtime"),
     _auth_session: AuthSession = Depends(require_authenticated_session),
     monitoring_service: AccountCopilotMonitoringService = Depends(get_account_copilot_monitoring_service),
 ) -> dict:
-    return monitoring_service.get_recent_failures(hours=hours, limit=limit, source=source)
+    return monitoring_service.get_recent_failures(hours=hours, limit=limit)
 
 
 @router.get("/monitoring/tool-calls/recent")
 def get_copilot_recent_tool_calls(
     limit: int = Query(default=100, ge=1, le=500),
-    source: Literal["runtime", "probe", "all"] = Query(default="runtime"),
     agent_name: str | None = Query(default=None),
     tool_domain: str | None = Query(default=None),
     tool_name: str | None = Query(default=None),
@@ -314,7 +310,6 @@ def get_copilot_recent_tool_calls(
 ) -> dict:
     return monitoring_service.get_recent_tool_calls(
         limit=limit,
-        source=source,
         agent_name=agent_name,
         tool_domain=tool_domain,
         tool_name=tool_name,
@@ -325,7 +320,6 @@ def get_copilot_recent_tool_calls(
 @router.get("/monitoring/llm-calls/recent")
 def get_copilot_recent_llm_calls(
     limit: int = Query(default=100, ge=1, le=500),
-    source: Literal["runtime", "probe", "all"] = Query(default="runtime"),
     agent_name: str | None = Query(default=None),
     model: str | None = Query(default=None),
     include_debug: bool = Query(default=False),
@@ -334,7 +328,6 @@ def get_copilot_recent_llm_calls(
 ) -> dict:
     return monitoring_service.get_recent_llm_calls(
         limit=limit,
-        source=source,
         agent_name=agent_name,
         model=model,
         include_debug=include_debug,
@@ -344,7 +337,6 @@ def get_copilot_recent_llm_calls(
 @router.get("/monitoring/structured-output/recent")
 def get_structured_output_recent(
     limit: int = Query(default=100, ge=1, le=500),
-    source: Literal["runtime", "all"] = Query(default="runtime"),
     agent_name: str | None = Query(default=None),
     contract_name: str | None = Query(default=None),
     node_name: str | None = Query(default=None),
@@ -356,7 +348,6 @@ def get_structured_output_recent(
 ) -> dict:
     return monitoring_service.query_recent_structured_output_events(
         limit=limit,
-        source=source,
         agent_name=agent_name,
         contract_name=contract_name,
         node_name=node_name,

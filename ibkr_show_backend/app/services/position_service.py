@@ -110,6 +110,7 @@ class PositionService:
         total = hits.get("total", {}).get("value", 0)
         documents = [dict(hit["_source"]) for hit in hits.get("hits", [])]
         self._apply_trade_realized_pnl(documents=documents, report_date=effective_report_date)
+        self._apply_diluted_cost(documents=documents, report_date=effective_report_date)
         items = [PositionItem(**document) for document in documents]
         summary = (
             self._build_positions_summary(
@@ -174,6 +175,7 @@ class PositionService:
         self,
         symbol: str,
         asset_class: str | None,
+        include_trades: bool = True,
     ) -> PositionDetailResponse:
         filters = [
             build_term_filter("symbol", symbol),
@@ -257,9 +259,11 @@ class PositionService:
                 trade_prices_by_date.setdefault(str(trade_date), []).append(float(trade_price))
 
         bars = []
+        bar_dates: set[str] = set()
         if price_docs:
             for document in price_docs:
                 report_date = document["report_date"]
+                bar_dates.add(str(report_date))
                 open_price = document.get("open_price")
                 close_price = document.get("close_price")
                 high_price = document.get("high_price")
@@ -293,6 +297,8 @@ class PositionService:
                 )
         else:
             for document in position_docs:
+                report_date = document["report_date"]
+                bar_dates.add(str(report_date))
                 open_price = document.get("open_price")
                 close_price = document.get("mark_price")
                 price_points = [
@@ -306,7 +312,7 @@ class PositionService:
                 ]
                 bars.append(
                     PositionDetailBar(
-                        report_date=document["report_date"],
+                        report_date=report_date,
                         open_price=open_price,
                         high_price=max(price_points) if price_points else None,
                         low_price=min(price_points) if price_points else None,
@@ -315,17 +321,37 @@ class PositionService:
                     )
                 )
 
-        trades = [
-            PositionDetailTradeMarker(
-                trade_date=document.get("trade_date"),
-                date_time=document.get("date_time"),
-                buy_sell=document.get("buy_sell"),
-                quantity=document.get("quantity"),
-                trade_price=document.get("trade_price"),
-                fifo_pnl_realized=document.get("fifo_pnl_realized"),
+        for trade_date, trade_price_points in trade_prices_by_date.items():
+            if trade_date in bar_dates or not trade_price_points:
+                continue
+            bars.append(
+                PositionDetailBar(
+                    report_date=trade_date,
+                    open_price=trade_price_points[0],
+                    high_price=max(trade_price_points),
+                    low_price=min(trade_price_points),
+                    close_price=trade_price_points[-1],
+                    quantity=None,
+                )
             )
-            for document in trade_docs
-        ]
+
+        bars.sort(key=lambda item: item.report_date)
+
+        trades = (
+            [
+                PositionDetailTradeMarker(
+                    trade_date=document.get("trade_date"),
+                    date_time=document.get("date_time"),
+                    buy_sell=document.get("buy_sell"),
+                    quantity=document.get("quantity"),
+                    trade_price=document.get("trade_price"),
+                    fifo_pnl_realized=document.get("fifo_pnl_realized"),
+                )
+                for document in trade_docs
+            ]
+            if include_trades
+            else []
+        )
 
         metadata = (
             price_docs[-1]
@@ -462,6 +488,160 @@ class PositionService:
 
         return lookup
 
+    def _apply_diluted_cost(self, documents: list[dict], report_date: str) -> None:
+        lookup = self._fetch_trade_cost_lookup(documents=documents, report_date=report_date)
+        for document in documents:
+            quantity = self._to_float(document.get("quantity"))
+            if quantity is None or quantity == 0:
+                document["diluted_cost_amount"] = None
+                document["diluted_cost_price"] = None
+                document["diluted_cost_status"] = "INVALID_QUANTITY"
+                continue
+
+            position_key = (
+                str(document.get("account_id") or ""),
+                str(document.get("asset_class") or ""),
+                str(document.get("symbol") or ""),
+            )
+            cost_facts = lookup.get(position_key)
+            if not cost_facts or cost_facts["trade_count"] == 0:
+                document["diluted_cost_amount"] = None
+                document["diluted_cost_price"] = None
+                document["diluted_cost_status"] = "NO_TRADE_HISTORY"
+                continue
+
+            quantity_delta = abs(cost_facts["sum_quantity"] - quantity)
+            tolerance = max(1e-6, abs(quantity) * 0.05)
+            if quantity_delta > tolerance:
+                document["diluted_cost_amount"] = None
+                document["diluted_cost_price"] = None
+                document["diluted_cost_status"] = "QUANTITY_MISMATCH"
+                continue
+
+            diluted_cost_amount = -cost_facts["sum_net_cash"]
+            document["diluted_cost_amount"] = diluted_cost_amount
+            document["diluted_cost_price"] = diluted_cost_amount / quantity
+            document["diluted_cost_status"] = "OK"
+
+    def _fetch_trade_cost_lookup(
+        self,
+        documents: list[dict],
+        report_date: str,
+    ) -> dict[tuple[str, str, str], dict[str, float | int]]:
+        position_keys = {
+            (
+                str(item.get("account_id") or ""),
+                str(item.get("asset_class") or ""),
+                str(item.get("symbol") or ""),
+            )
+            for item in documents
+            if item.get("account_id") and item.get("asset_class") and item.get("symbol")
+        }
+        if not position_keys:
+            return {}
+
+        filters: list[dict] = [build_date_range_filter("trade_date", None, report_date)]
+        account_ids = sorted({key[0] for key in position_keys})
+        asset_classes = sorted({key[1] for key in position_keys})
+        symbols = sorted({key[2] for key in position_keys})
+        if account_ids:
+            filters.append({"terms": {"account_id": account_ids}})
+        if asset_classes:
+            filters.append({"terms": {"asset_class": asset_classes}})
+        if symbols:
+            filters.append({"terms": {"symbol": symbols}})
+
+        grouped_trades: dict[tuple[str, str, str], list[dict]] = {key: [] for key in position_keys}
+        search_after: list | None = None
+
+        while True:
+            body = {
+                "size": 10000,
+                "query": {"bool": {"filter": [item for item in filters if item]}},
+                "sort": [
+                    {"account_id": {"order": "asc", "missing": "_last"}},
+                    {"asset_class": {"order": "asc", "missing": "_last"}},
+                    {"symbol": {"order": "asc", "missing": "_last"}},
+                    {"trade_date": {"order": "asc", "missing": "_last"}},
+                    {"date_time": {"order": "asc", "missing": "_last"}},
+                    {"transaction_id": {"order": "asc", "missing": "_last"}},
+                    {"trade_id": {"order": "asc", "missing": "_last"}},
+                ],
+                "_source": [
+                    "account_id",
+                    "asset_class",
+                    "symbol",
+                    "trade_date",
+                    "date_time",
+                    "transaction_id",
+                    "trade_id",
+                    "quantity",
+                    "net_cash",
+                ],
+                "track_total_hits": False,
+            }
+            if search_after is not None:
+                body["search_after"] = search_after
+
+            response = self.es_client.search(
+                index=self.settings.es_trade_index,
+                body=body,
+            )
+            hits = response.get("hits", {}).get("hits", [])
+            for hit in hits:
+                source = hit.get("_source", {})
+                position_key = (
+                    str(source.get("account_id") or ""),
+                    str(source.get("asset_class") or ""),
+                    str(source.get("symbol") or ""),
+                )
+                if position_key in position_keys:
+                    grouped_trades[position_key].append(source)
+
+            if len(hits) < body["size"]:
+                break
+            search_after = hits[-1].get("sort")
+            if search_after is None:
+                break
+
+        return {
+            key: self._calculate_current_period_trade_cost(trades)
+            for key, trades in grouped_trades.items()
+            if trades
+        }
+
+    def _calculate_current_period_trade_cost(self, trades: list[dict]) -> dict[str, float | int]:
+        running_quantity = 0.0
+        period_start_index = 0
+
+        for index, trade in enumerate(trades):
+            quantity = self._to_float(trade.get("quantity"))
+            if quantity is None:
+                continue
+            running_quantity += quantity
+            if abs(running_quantity) <= 1e-6:
+                running_quantity = 0.0
+                period_start_index = index + 1
+
+        current_period_trades = trades[period_start_index:]
+        sum_net_cash = 0.0
+        sum_quantity = 0.0
+        trade_count = 0
+        for trade in current_period_trades:
+            net_cash = self._to_float(trade.get("net_cash"))
+            quantity = self._to_float(trade.get("quantity"))
+            if net_cash is not None:
+                sum_net_cash += net_cash
+                trade_count += 1
+            if quantity is not None:
+                sum_quantity += quantity
+
+        return {
+            "sum_net_cash": sum_net_cash,
+            "sum_quantity": sum_quantity,
+            "trade_count": trade_count,
+        }
+
     def _build_position_summary_aggs(self) -> dict:
         return {
             "total_position_value": {"sum": {"field": "position_value"}},
@@ -521,3 +701,12 @@ class PositionService:
         if numerator is None or denominator in (None, 0):
             return None
         return float(numerator) / abs(float(denominator)) * 100.0
+
+    @staticmethod
+    def _to_float(value: object) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None

@@ -168,6 +168,7 @@ def _make_mock_deps():
         longbridge_client=None,
         symbol_agent=mock_symbol_agent,
         macro_agent=mock_macro_agent,
+        monitoring_service=None,
         _captured_doc=captured_doc,
     )
 
@@ -943,6 +944,48 @@ class TestRunner:
 
         assert runner.deps.symbol_agent is mock_symbol_agent
         assert runner.deps.macro_agent is mock_macro_agent
+
+    def test_finalize_does_not_fail_when_replay_snapshot_persist_fails(self):
+        from app.agents.daily_position_review_graph.runner import DailyPositionReviewGraphRunner
+
+        repository = MagicMock()
+        repository.save_review.side_effect = lambda doc: doc
+        trace_service = MagicMock()
+        replay_service = MagicMock()
+        replay_service.record_snapshot.side_effect = RuntimeError("mapping exploded")
+        runner = DailyPositionReviewGraphRunner(
+            review_service=MagicMock(),
+            llm_service=MagicMock(),
+            repository=repository,
+            trace_service=trace_service,
+            replay_service=replay_service,
+        )
+        document = {
+            "id": "2026-05-20",
+            "report_date": "2026-05-20",
+            "review_type": "daily_position_review",
+            "status": "success",
+            "summary": "ok",
+            "data_limitations": [],
+            "metadata": {},
+            "run_trace": [{"node_name": "persist_daily_review", "status": "success"}],
+        }
+        initial_state = {
+            "report_date": "2026-05-20",
+            "auto_email": False,
+            "started_at": "2026-05-20T00:00:00+00:00",
+            "agent_run_id": "daily-run-1",
+        }
+
+        result = runner._finalize(document, initial_state, {"node_traces": document["run_trace"]})
+
+        assert result["status"] == "success"
+        assert result["agent_replay"]["persisted"] is False
+        assert "mapping exploded" in result["agent_replay"]["error"]
+        assert any("agent_replay_persist_failed" in item for item in result["data_limitations"])
+        trace_service.record_trace.assert_called_once()
+        replay_service.record_snapshot.assert_called_once()
+        repository.save_review.assert_called_once()
 
 
 class TestProductionDIPath:

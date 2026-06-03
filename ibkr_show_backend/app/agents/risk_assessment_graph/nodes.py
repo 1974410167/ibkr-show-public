@@ -52,11 +52,32 @@ def _as_snapshot(raw) -> AccountRiskSnapshot:
 # === Node factories ===
 
 
+def _record_ibkr_metric(monitoring_service, *, run_id, agent_name, node_name, tool_name, ok, latency_ms, error_message=None, metadata=None):
+    if not monitoring_service:
+        return
+    try:
+        monitoring_service.record_tool_call(
+            run_id=run_id or "", session_id="", tool_name=tool_name, tool_domain="ibkr",
+            ok=ok, latency_ms=latency_ms, source="runtime", agent_name=agent_name,
+            node_name=node_name, error_message=error_message, metadata=metadata or {},
+        )
+    except Exception:
+        pass
+
+
 def make_build_account_risk_facts_node(deps):
     def build_account_risk_facts_node(state: dict) -> dict:
         trace = start_node_trace("build_account_risk_facts")
+        import time as _time
+        _t0 = _time.monotonic()
         try:
             snapshot = deps.account_facts_builder.build(question=state.get("user_question"))
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="risk_assessment", node_name="build_account_risk_facts",
+                tool_name="ibkr_build_risk_facts", ok=True, latency_ms=latency_ms,
+            )
             result: dict[str, Any] = {
                 "account_risk_snapshot": snapshot,
                 "assessment_type": "portfolio_risk",
@@ -65,6 +86,13 @@ def make_build_account_risk_facts_node(deps):
             return {**result, "node_traces": [trace]}
         except Exception as exc:
             error_msg = str(exc)[:200]
+            latency_ms = int((_time.monotonic() - _t0) * 1000)
+            _record_ibkr_metric(
+                deps.monitoring_service, run_id=state.get("agent_run_id"),
+                agent_name="risk_assessment", node_name="build_account_risk_facts",
+                tool_name="ibkr_build_risk_facts", ok=False, latency_ms=latency_ms,
+                error_message=error_msg,
+            )
             trace = finish_node_trace(trace, "failed", error=error_msg)
             return {
                 "errors": [f"build_account_risk_facts: {error_msg}"],
