@@ -21,29 +21,13 @@ IBKR 个人账户可视化与 AI 分析工具。把 IBKR Flex Query / 历史 CSV
 - Email SMTP 配置
 - 系统状态页 — `/admin/system` 聚合 10 个组件健康检查
 
-### 账户曲线
-
-![账户权益、净收益、净成本和已实现盈亏曲线](docs/screenshots/readme/performance-curves.png)
-
-### 盈亏日历
-
-![按月查看每日盈亏表现](docs/screenshots/readme/performance-calendar.png)
-
-### 持仓全景
-
-![持仓全景图按仓位大小和行业着色展示当前组合](docs/screenshots/readme/positions-treemap.png)
-
-### 持仓分析
-
-![持仓集中度、资金类别和行业分布](docs/screenshots/readme/positions-allocation.png)
-
-### AI 决策
-
-![交易决策 Agent 输出持仓管理建议和评分维度](docs/screenshots/readme/trade-decision-agent.png)
-
-### AI 复盘
-
-![交易复盘 Agent 展示最近复盘和标的级评分详情](docs/screenshots/readme/trade-review-agent.png)
+| 账户曲线 | 盈亏日历 |
+|----------|----------|
+| <img src="docs/screenshots/readme/performance-curves.png" alt="账户权益、净收益、净成本和已实现盈亏曲线" width="100%"> | <img src="docs/screenshots/readme/performance-calendar.png" alt="按月查看每日盈亏表现" width="100%"> |
+| 持仓全景 | 持仓分析 |
+| <img src="docs/screenshots/readme/positions-treemap.png" alt="持仓全景图按仓位大小和行业着色展示当前组合" width="100%"> | <img src="docs/screenshots/readme/positions-allocation.png" alt="持仓集中度、资金类别和行业分布" width="100%"> |
+| AI 决策 | AI 复盘 |
+| <img src="docs/screenshots/readme/trade-decision-agent.png" alt="交易决策 Agent 输出持仓管理建议和评分维度" width="100%"> | <img src="docs/screenshots/readme/trade-review-agent.png" alt="交易复盘 Agent 展示最近复盘和标的级评分详情" width="100%"> |
 
 ## 快速开始
 
