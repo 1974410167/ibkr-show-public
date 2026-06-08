@@ -1,21 +1,32 @@
 # IBKR Trade Agent
 
+**The open-source Trade Agent for real IBKR portfolios.**
+
+Most trading agents analyze stocks. **IBKR Trade Agent analyzes your actual portfolio.**
+
 [中文文档](README.zh-CN.md)
+
+![License](https://img.shields.io/github/license/1974410167/ibkr-trade-agent)
+![GitHub stars](https://img.shields.io/github/stars/1974410167/ibkr-trade-agent?style=social)
+![Docker Compose](https://img.shields.io/badge/Docker%20Compose-ready-2496ED?logo=docker&logoColor=white)
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 
 IBKR Trade Agent is an **IBKR** account analytics and AI research workspace for a **portfolio dashboard**, **trade review**, **decision agents**, and **account-level analytics**. It imports IBKR Flex Query data or historical CSV files into Elasticsearch, serves account APIs through FastAPI, and provides a Vue dashboard for portfolio monitoring, trade replay, and AI-assisted research.
 
-This project is **not a broker**, **not an automated trading bot**, and **does not connect to IBKR order placement APIs**. It does not submit, modify, cancel, or route orders. IBKR Trade Agent only analyzes account data and public market context to support human research and review.
+**Risk boundary**: this project is **not a broker**, **not an auto-trading bot**, and **does not connect to IBKR trading APIs or order placement APIs**. It does not submit, modify, cancel, route, or execute live orders. IBKR Trade Agent only analyzes account data and public market context to support human research and review.
 
-- **IBKR is the only source for private account data**: account balances, positions, trades, cost basis, PnL, dividends, deposits, and withdrawals.
+- **IBKR is the only source for private account data**: account balances, positions, trades, cost basis, Profit and Loss (PnL), dividends, deposits, and withdrawals.
 - **LongBridge is used only for public market data**: quotes, candles, news, announcements, earnings, valuation, benchmarks, and macro context.
-- **LLM features are optional**: core account, position, trade, cash-flow, and dividend pages still work without an LLM provider.
+- **Large Language Model (LLM) features are optional**: core account, position, trade, cash-flow, and dividend pages still work without an LLM provider.
 - **Demo mode is enabled by default**: you can explore the full product without an IBKR account.
 
 ## Features
 
 ### Portfolio Dashboard
 
-- Account overview: total equity, cash, market value, PnL, TWR, equity curves, and PnL calendar.
+- Account overview: total equity, cash, market value, PnL, Time-Weighted Return (TWR), equity curves, and PnL calendar.
 - Position analytics: quantity, average cost, market price, market value, allocation, daily move, concentration, and asset distribution.
 - Trade records: filter by date, symbol, and side; sort, paginate, and export CSV.
 - Deposits, withdrawals, and dividends: currency summaries, withholding tax, and net cash received.
@@ -23,7 +34,7 @@ This project is **not a broker**, **not an automated trading bot**, and **does n
 
 ### AI Trade Agents
 
-- Daily position review: generated automatically with optional SMTP email delivery.
+- Daily position review: generated automatically with optional Simple Mail Transfer Protocol (SMTP) email delivery.
 - Trade review agent: symbol-level and single-trade review with a 100-point scoring system.
 - Trade decision agent: add, hold, reduce, or exit suggestions with earnings analysis.
 - Optional LLM provider configuration through the admin UI, compatible with OpenAI-style APIs.
@@ -31,7 +42,7 @@ This project is **not a broker**, **not an automated trading bot**, and **does n
 ### Market Data Integration
 
 - LongBridge OAuth one-click authorization with automatic Client ID registration.
-- LongBridge OpenAPI / SDK / MCP reuse the same OAuth token.
+- LongBridge OpenAPI / SDK / Model Context Protocol (MCP) reuse the same OAuth token.
 - Public market data only: quotes, candles, benchmark ETFs, news, announcements, earnings, and valuation.
 - No LongBridge account, order, execution, or trading API usage.
 
@@ -41,6 +52,32 @@ This project is **not a broker**, **not an automated trading bot**, and **does n
 - System status page at `/admin/system` with 10 component health checks.
 - Docker Compose deployment with Elasticsearch, Redis, backend, frontend, and worker services.
 - Release safety and Docker verification scripts.
+
+## Why IBKR Trade Agent?
+
+Most portfolio dashboards stop at positions and returns. Most trading agents focus on single-stock research. IBKR Trade Agent is built around a different idea: start from the investor's real IBKR account, then combine account history, holdings, realized trades, public market data, earnings/news context, and AI agents into one research workflow.
+
+It is designed for long-term investors who care about account-level analysis: portfolio concentration, cash movement, dividends, realized and unrealized performance, review quality, and decision discipline. IBKR remains the only source for private account data, while LongBridge is used only for public market data such as quotes, candles, news, announcements, earnings, valuation, benchmarks, and macro context.
+
+## Architecture
+
+```text
+IBKR Flex Query / CSV
+  ↓
+Worker Parser
+  ↓
+Elasticsearch
+  ↓
+FastAPI Backend
+  ↓
+Vue Dashboard
+  ↓
+AI Trade Agents
+  ↓
+Trade Review / Trade Decision / Daily Report
+```
+
+## Screenshots
 
 | Account Curves | PnL Calendar |
 |----------|----------|
@@ -273,14 +310,14 @@ scripts/verify_docker.sh          # End-to-end Docker verification
 
 ## Roadmap
 
-- Multi-agent investment debate.
-- Event calendar agent.
-- Agent decision evaluation.
-- encrypted config storage.
-- observability.
-- More complete multi-user and permission model.
-- Richer demo data.
-- More complete CI.
+- Multi-agent investment debate: bullish, bearish, macro, technical, and risk agents.
+- Event calendar agent for CPI, FOMC, earnings, and macro events.
+- Agent decision evaluation with post-trade performance tracking.
+- Agent trace observability for prompts, tool calls, and intermediate outputs.
+- Encrypted storage for API keys and account configuration.
+- Richer demo portfolio data.
+- Multi-user and permission model.
+- More complete CI and release workflow.
 
 ## License
 

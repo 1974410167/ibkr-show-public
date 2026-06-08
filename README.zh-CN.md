@@ -6,35 +6,61 @@ IBKR 个人账户可视化与 AI 分析工具。把 IBKR Flex Query / 历史 CSV
 
 - **IBKR 是个人账户数据唯一来源**（账户、持仓、交易、成本、盈亏、股息、出入金）
 - **LongBridge 只用于公开市场数据**（行情、K 线、新闻、公告、财报、估值），不调用交易/账户/下单接口
-- **LLM 是可选能力**，未配置时核心页面仍可运行
+- **大语言模型（LLM）是可选能力**，未配置时核心页面仍可运行
 - **默认提供 Demo 模式**，没有 IBKR 账号也能体验完整功能
 
 ## 功能概览
 
-### Portfolio Dashboard
+### 账户看板
 
-- 账户总览 — 总权益、现金、市值、盈亏、TWR、权益曲线、盈亏日历
+- 账户总览 — 总权益、现金、市值、盈亏、时间加权收益率（TWR）、权益曲线、盈亏日历
 - 持仓分析 — 数量、均价、市价、市值、占比、日涨跌、集中度、资产分布
 - 交易记录 — 按日期/代码/方向筛选、排序、分页、CSV 导出
 - 出入金 / 股息 — 按币种汇总、预扣税、净到账
 
-### AI Trade Agents
+### AI 交易 Agent
 
-- 每日持仓复盘 — 自动生成 + SMTP 邮件推送
+- 每日持仓复盘 — 自动生成 + 邮件推送
 - 交易复盘 Agent — 标的级 / 单笔交易复盘，100 分制
 - 交易决策 Agent — 加仓/持有/减仓/清仓建议 + 财报分析
-- LLM Provider 后台配置 — 支持 OpenAI-compatible
+- 大语言模型供应商后台配置 — 支持 OpenAI 兼容接口
 
-### Market Data Integration
+### 市场数据集成
 
-- LongBridge OAuth 一键授权 — 自动注册 Client ID
+- LongBridge OAuth 一键授权 — 自动注册客户端 ID
 - LongBridge **只用于公开市场数据**（行情、K 线、基准 ETF、资讯、公告、财报、估值）
 - **不用于**账户、持仓、订单、成交、下单等私有数据
 
-### Admin & Deployment
+### 后台配置与部署
 
-- Email SMTP 配置
+- SMTP 邮件配置
 - 系统状态页 — `/admin/system` 聚合 10 个组件健康检查
+
+## 为什么选择 IBKR Trade Agent？
+
+普通账户看板通常只展示持仓和收益；普通交易 Agent 往往只围绕单个股票做研究。IBKR Trade Agent 的出发点不同：它从真实 IBKR 账户数据开始，把账户历史、当前持仓、真实交易、公开市场数据、财报新闻和 AI Agent 放进同一个研究流程。
+
+它更适合长期投资者做账户级分析：仓位集中度、现金流、股息、已实现和未实现盈亏、复盘质量、决策纪律，而不只是股票级研究。IBKR 是私有账户数据唯一来源，LongBridge 只用于行情、K 线、资讯、公告、财报、估值、基准和宏观等公开市场数据。
+
+## 架构
+
+```text
+IBKR Flex Query / 历史 CSV
+  ↓
+Worker 解析器
+  ↓
+Elasticsearch
+  ↓
+FastAPI 后端
+  ↓
+Vue 账户看板
+  ↓
+AI 交易 Agent
+  ↓
+交易复盘 / 交易决策 / 每日报告
+```
+
+## 截图
 
 | 账户曲线 | 盈亏日历 |
 |----------|----------|
@@ -89,7 +115,7 @@ docker compose up -d
 | 配置项 | 后台路径 |
 |--------|----------|
 | IBKR Flex Token / Query ID | `/admin/ibkr` |
-| LLM Provider / API Key / Model | `/admin/llm` |
+| 大语言模型供应商 / API Key / 模型 | `/admin/llm` |
 | LongBridge OAuth | `/admin/longbridge-mcp` |
 | Email SMTP | `/admin/email` |
 | 系统状态总览 | `/admin/system` |
@@ -99,7 +125,7 @@ docker compose up -d
 ## LongBridge 说明
 
 - 普通用户只需进入 `/admin/longbridge-mcp`，点击"开始授权"
-- 系统会自动注册 OAuth Client ID，跳转到 LongBridge 授权页
+- 系统会自动注册 OAuth 客户端 ID，跳转到 LongBridge 授权页
 - 用户同意后，OpenAPI / SDK / MCP 复用同一套 OAuth token
 - LongBridge **只用于公开市场数据**（行情、K 线、基准 ETF、资讯、公告、财报、估值）
 - **不用于**账户、持仓、订单、成交、下单等私有数据
@@ -267,14 +293,14 @@ scripts/verify_docker.sh          # Docker 全链路验收
 
 ## Roadmap
 
-- Multi-agent investment debate
-- Event calendar agent
-- Agent decision evaluation
-- encrypted config storage
-- observability
-- 更完善的多用户 / 权限模型
-- 更丰富的 Demo 数据
-- 更完整的 CI
+- 多 Agent 投资辩论：看多、看空、宏观、技术面和风险 Agent
+- 事件日历 Agent：覆盖 CPI、FOMC、财报和宏观事件
+- Agent 决策评估：结合交易后的实际表现追踪
+- Agent 运行轨迹可观测性：覆盖提示词、工具调用和中间输出
+- API Key 和账户配置的加密存储
+- 更丰富的 Demo 组合数据
+- 多用户和权限模型
+- 更完整的 CI 和发布流程
 
 ## License
 
