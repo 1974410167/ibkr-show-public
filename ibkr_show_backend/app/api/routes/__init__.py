@@ -10,6 +10,7 @@ from app.api.routes.admin_agent_eval import router as admin_agent_eval_router
 from app.api.routes.admin_longbridge_openapi import router as admin_longbridge_openapi_router
 from app.api.routes.admin_longbridge_mcp import router as admin_longbridge_mcp_router
 from app.api.routes.admin_llm import router as admin_llm_router
+from app.api.routes.admin_market_events import router as admin_market_events_router
 from app.api.routes.admin_llm_calls import router as admin_llm_calls_router
 from app.api.routes.admin_prompts import router as admin_prompts_router
 from app.api.routes.admin_system import router as admin_system_router
@@ -22,6 +23,7 @@ from app.api.routes.daily_position_review import router as daily_position_review
 from app.api.routes.dividends import router as dividends_router
 from app.api.routes.health import router as health_router
 from app.api.routes.longbridge import router as longbridge_router
+from app.api.routes.market_events import router as market_events_router
 from app.api.routes.positions import router as positions_router
 from app.api.routes.risk_assessment_agent import router as risk_assessment_agent_router
 from app.api.routes.symbol_analysis import router as symbol_analysis_router
@@ -42,6 +44,7 @@ api_router.include_router(admin_longbridge_openapi_router)
 api_router.include_router(admin_longbridge_mcp_router)
 api_router.include_router(admin_llm_router)
 api_router.include_router(admin_llm_calls_router)
+api_router.include_router(admin_market_events_router)
 api_router.include_router(admin_prompts_router)
 api_router.include_router(admin_system_router)
 api_router.include_router(agent_tasks_router)
@@ -52,6 +55,7 @@ api_router.include_router(daily_account_snapshot_email_router)
 api_router.include_router(daily_position_review_router)
 api_router.include_router(dividends_router)
 api_router.include_router(longbridge_router)
+api_router.include_router(market_events_router)
 api_router.include_router(positions_router)
 api_router.include_router(risk_assessment_agent_router)
 api_router.include_router(symbol_analysis_router)

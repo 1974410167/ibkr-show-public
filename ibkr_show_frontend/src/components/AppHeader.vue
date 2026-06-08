@@ -24,6 +24,7 @@ const loginForm = reactive({
 const baseNavItems = [
   { label: '总览', icon: 'pi pi-chart-line', to: '/' },
   { label: '持仓', icon: 'pi pi-briefcase', to: '/positions' },
+  { label: '重点事件', icon: 'pi pi-calendar', to: '/market-events' },
 ]
 
 const protectedNavItems = [

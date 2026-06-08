@@ -10,6 +10,7 @@ from app.agents.account_copilot.longbridge_tools import AccountCopilotLongbridge
 from app.agents.account_copilot.skill_registry import AccountCopilotSkillRegistry, build_default_skill_registry
 from app.agents.account_copilot.subagent_registry import AccountCopilotSubAgentRegistry, build_default_subagent_registry
 from app.agents.account_copilot.tool_registry import AccountCopilotToolRegistry, build_default_tool_registry
+from app.agents.eval_judge import AgentEvalJudgeService
 from app.core.auth import SESSION_COOKIE_NAME, AuthSession, verify_session_token
 from app.core.config import Settings, get_settings
 from app.services.account_service import AccountService
@@ -39,6 +40,16 @@ from app.services.agent_replay_repository import AgentReplayRepository
 from app.services.agent_replay_service import AgentReplayService
 from app.services.agent_eval_repository import BadCaseFeedbackRepository, EvalCaseRepository, EvalRunRepository, RegressionGateReportRepository, RegressionProfileRepository
 from app.services.agent_eval_service import AgentEvalService
+from app.services.eval_simulation_repository import SyntheticSimulationRepository
+from app.services.eval_simulation_executors import RealSimulationAgentExecutor
+from app.services.eval_simulation_service import SyntheticSimulationService
+from app.services.eval_failure_mining_repository import SyntheticFailureMiningRepository
+from app.services.eval_failure_mining_service import SyntheticFailureMiningService
+from app.services.eval_failure_to_case_service import FailureToEvalCaseService
+from app.services.eval_baseline_health_repository import BaselineHealthReportRepository
+from app.services.eval_baseline_health_service import BaselineHealthReportService
+from app.services.eval_judge_calibration_repository import JudgeCalibrationRepository
+from app.services.eval_judge_calibration_service import JudgeCalibrationService
 from app.services.agent_regression_profile_service import RegressionProfileService
 from app.services.agent_change_impact_service import AgentChangeImpactService
 from app.services.agent_regression_gate_service import AgentRegressionGateService
@@ -204,6 +215,71 @@ def get_agent_eval_service() -> AgentEvalService:
         feedback_repository=get_agent_feedback_repository(),
         llm_call_service=get_llm_call_metrics_service(),
         run_trace_repository=get_agent_run_trace_repository(),
+    )
+
+
+def get_eval_simulation_repository() -> SyntheticSimulationRepository:
+    return SyntheticSimulationRepository(get_es_client(), get_settings())
+
+
+def get_eval_simulation_service() -> SyntheticSimulationService:
+    return SyntheticSimulationService(
+        get_eval_simulation_repository(),
+        real_executor=RealSimulationAgentExecutor(
+            trade_decision_agent=get_trade_decision_agent(),
+            daily_position_review_agent=get_daily_position_review_agent(),
+            daily_position_review_service=get_daily_position_review_service(),
+            trade_review_agent=get_trade_review_agent(),
+            allow_live_account_copilot=False,
+        ),
+    )
+
+
+def get_eval_failure_mining_repository() -> SyntheticFailureMiningRepository:
+    return SyntheticFailureMiningRepository(get_es_client(), get_settings())
+
+
+def get_eval_failure_mining_service() -> SyntheticFailureMiningService:
+    return SyntheticFailureMiningService(
+        failure_repository=get_eval_failure_mining_repository(),
+        simulation_repository=get_eval_simulation_repository(),
+        judge_service=AgentEvalJudgeService(llm_client=get_llm_service()) if get_settings().llm_enable else None,
+    )
+
+
+def get_failure_to_eval_case_service() -> FailureToEvalCaseService:
+    return FailureToEvalCaseService(
+        failure_repository=get_eval_failure_mining_repository(),
+        simulation_repository=get_eval_simulation_repository(),
+        case_repository=get_agent_eval_case_repository(),
+    )
+
+
+def get_baseline_health_report_repository() -> BaselineHealthReportRepository:
+    return BaselineHealthReportRepository(get_es_client(), get_settings())
+
+
+def get_baseline_health_report_service() -> BaselineHealthReportService:
+    return BaselineHealthReportService(
+        report_repository=get_baseline_health_report_repository(),
+        simulation_repository=get_eval_simulation_repository(),
+        failure_repository=get_eval_failure_mining_repository(),
+        case_repository=get_agent_eval_case_repository(),
+        agent_eval_service=get_agent_eval_service(),
+    )
+
+
+def get_judge_calibration_repository() -> JudgeCalibrationRepository:
+    return JudgeCalibrationRepository(get_es_client(), get_settings())
+
+
+def get_judge_calibration_service() -> JudgeCalibrationService:
+    return JudgeCalibrationService(
+        calibration_repository=get_judge_calibration_repository(),
+        failure_repository=get_eval_failure_mining_repository(),
+        simulation_repository=get_eval_simulation_repository(),
+        baseline_report_repository=get_baseline_health_report_repository(),
+        case_repository=get_agent_eval_case_repository(),
     )
 
 

@@ -862,6 +862,198 @@ def check_trade_decision_quality(output: Any, case: EvalCase | dict, replay: dic
         )
     )
 
+    # ---------------------------------------------------------------------------
+    # P3 Stage 06: trade_decision risk_gate correctness checks
+    # ---------------------------------------------------------------------------
+    # When the case declares scenario expectations (via tags or expected_behavior
+    # flags), the deterministic risk gate MUST have downgraded the action.
+    # ---------------------------------------------------------------------------
+    rg = _get_field(output, "risk_gate") or {}
+    rg_flags = set(_extract_list_field(rg, "risk_flags") or [])
+    action = str(_get_field(output, "action") or "").lower()
+    position_advice = _get_field(output, "position_advice") or {}
+    max_pct = position_advice.get("max_position_pct")
+    execution_plan = _get_field(output, "execution_plan") or {}
+    invalid_conditions = list(execution_plan.get("invalid_conditions") or [])
+    risk_control = _get_field(output, "risk_control") or {}
+    rc_invalidation = list(risk_control.get("invalidation_conditions") or [])
+    rc_stop_add = list(risk_control.get("stop_add_conditions") or [])
+    rc_recheck = list(risk_control.get("recheck_triggers") or [])
+    rc_batch = list(risk_control.get("batch_plan") or [])
+    rc_downside = list(risk_control.get("downside_scenarios") or [])
+    rc_rr = risk_control.get("reward_risk_ratio")
+    final_user_question = str(input_payload.get("question") or "") + " " + str(_get_field(output, "decision_summary") or "")
+
+    actionable = action in {"add", "add_small", "add_batch", "add_on_pullback", "add_right_side", "hold_no_add", "reduce_now", "sell_thesis_broken", "panic_blocked"}
+    if actionable or tags & {"risk_control_hardening", "risk_control"}:
+        required_keys = {
+            "max_position_pct", "current_position_pct", "suggested_target_position_pct",
+            "position_limit_status", "invalidation_conditions", "stop_add_conditions",
+            "recheck_triggers", "batch_plan", "downside_scenarios", "reward_risk_ratio",
+            "risk_flags", "data_limitations",
+        }
+        missing_keys = sorted(k for k in required_keys if k not in risk_control)
+        results.append(
+            CheckResult(
+                "risk_control_block_present",
+                isinstance(risk_control, dict) and not missing_keys,
+                "high" if missing_keys else "info",
+                10 if not missing_keys else 0,
+                10,
+                "risk_control block is complete" if not missing_keys else "risk_control block is missing required keys",
+                {"missing_keys": missing_keys},
+            )
+        )
+
+    if action in {"add", "add_batch", "add_on_pullback", "add_right_side"} or tags & {"risk_control_hardening"}:
+        checks = [
+            ("risk_control_has_position_limit", max_pct is not None and _safe_float_eval(max_pct) is not None and _safe_float_eval(max_pct) > 0, "missing_position_limit"),
+            ("risk_control_has_invalidation_condition", bool(invalid_conditions or rc_invalidation), "missing_invalidation_condition"),
+            ("risk_control_has_batch_plan", bool(rc_batch), "missing_batch_plan"),
+            ("risk_control_has_stop_add_condition", bool(rc_stop_add), "missing_stop_add_condition"),
+            ("risk_control_has_recheck_trigger", bool(rc_recheck), "missing_recheck_trigger"),
+            ("risk_control_has_downside_scenario", bool(rc_downside), "missing_downside_scenario"),
+            ("risk_control_has_reward_risk_ratio", rc_rr is not None, "missing_risk_reward_ratio"),
+        ]
+        for check_name, passed, subtype in checks:
+            results.append(
+                CheckResult(
+                    check_name,
+                    passed,
+                    "high" if not passed else "info",
+                    10 if passed else 0,
+                    10,
+                    "Risk control component present" if passed else f"Risk control missing {subtype}",
+                    {"failure_type": "missing_risk_control", "failure_subtype": subtype},
+                )
+            )
+
+    if tags & {"over_position"}:
+        status = str(risk_control.get("position_limit_status") or "")
+        high_position_warning = status in {"near_limit", "at_limit", "over_limit"} or "position_limit_reached" in rg_flags
+        results.append(
+            CheckResult(
+                "risk_control_has_high_position_warning",
+                high_position_warning,
+                "high" if not high_position_warning else "info",
+                10 if high_position_warning else 0,
+                10,
+                "High/over position is warned" if high_position_warning else "High position case needs explicit warning",
+                {"failure_type": "missing_risk_control", "failure_subtype": "missing_high_position_warning", "position_limit_status": status},
+            )
+        )
+
+    if tags & {"missing_max_position_pct"}:
+        passed = (action not in {"add", "add_small", "add_batch", "add_on_pullback", "add_right_side"}) or "missing_position_limit" in rg_flags
+        results.append(
+            CheckResult(
+                "risk_gate_blocks_missing_position_limit",
+                passed,
+                "high" if not passed else "info",
+                10 if passed else 0,
+                10,
+                "Risk gate blocks add actions when max_position_pct is missing" if passed else "Risk gate should block add actions when max_position_pct is missing/<=0",
+                {"action": action, "max_position_pct": max_pct, "risk_flags": sorted(rg_flags)},
+            )
+        )
+
+    if tags & {"missing_invalidation_conditions"}:
+        passed = (action not in {"add", "add_batch", "add_right_side"}) or "missing_invalidation_conditions" in rg_flags
+        results.append(
+            CheckResult(
+                "risk_gate_requires_invalid_conditions",
+                passed,
+                "high" if not passed else "info",
+                10 if passed else 0,
+                10,
+                "Risk gate requires invalidation conditions for strong add" if passed else "Risk gate should require invalidation conditions for strong add",
+                {"action": action, "invalid_conditions": invalid_conditions, "risk_flags": sorted(rg_flags)},
+            )
+        )
+
+    if tags & {"insufficient_data"}:
+        confidence = str(_get_field(output, "confidence") or "").lower()
+        passed = (action not in {"add", "add_small", "add_batch", "add_on_pullback", "add_right_side"}) and confidence != "high"
+        results.append(
+            CheckResult(
+                "risk_gate_downgrades_insufficient_data",
+                passed,
+                "high" if not passed else "info",
+                10 if passed else 0,
+                10,
+                "Risk gate downgrades action/confidence on insufficient data" if passed else "Risk gate should downgrade action/confidence on insufficient data",
+                {"action": action, "confidence": confidence, "risk_flags": sorted(rg_flags)},
+            )
+        )
+
+    if tags & {"weak_catalyst"}:
+        passed = (action not in {"add", "add_batch", "add_right_side"}) or "weak_catalyst_downgrade" in rg_flags
+        results.append(
+            CheckResult(
+                "risk_gate_downgrades_weak_catalyst",
+                passed,
+                "high" if not passed else "info",
+                10 if passed else 0,
+                10,
+                "Risk gate downgrades strong add on weak catalyst" if passed else "Risk gate should downgrade strong add on weak catalyst",
+                {"action": action, "risk_flags": sorted(rg_flags)},
+            )
+        )
+        confidence = str(_get_field(output, "confidence") or "").lower()
+        summary = str(_get_field(output, "decision_summary") or "")
+        weak_language = any(term in summary for term in ("弱催化", "观察", "不构成独立加仓理由"))
+        weak_confidence_ok = confidence != "high"
+        results.append(
+            CheckResult(
+                "weak_catalyst_not_strong_buy",
+                action not in {"add_batch", "add_right_side"} and weak_confidence_ok,
+                "high" if action in {"add_batch", "add_right_side"} or not weak_confidence_ok else "info",
+                10 if action not in {"add_batch", "add_right_side"} and weak_confidence_ok else 0,
+                10,
+                "Weak catalyst does not become strong buy" if action not in {"add_batch", "add_right_side"} and weak_confidence_ok else "Weak catalyst should not produce strong buy/high confidence",
+                {"action": action, "confidence": confidence, "risk_flags": sorted(rg_flags)},
+            )
+        )
+        results.append(
+            CheckResult(
+                "weak_signal_requires_downgraded_language",
+                weak_language,
+                "high" if not weak_language else "info",
+                10 if weak_language else 0,
+                10,
+                "Weak catalyst language is downgraded" if weak_language else "Decision summary should state weak catalyst / observe / not standalone add reason",
+                {"decision_summary": summary},
+            )
+        )
+
+    if tags & {"over_position"}:
+        passed = (action not in {"add", "add_small", "add_batch", "add_on_pullback", "add_right_side"}) or "position_limit_reached" in rg_flags
+        results.append(
+            CheckResult(
+                "risk_gate_blocks_over_position_add",
+                passed,
+                "high" if not passed else "info",
+                10 if passed else 0,
+                10,
+                "Risk gate blocks add when at/over max position" if passed else "Risk gate should block add when at/over max position",
+                {"action": action, "risk_flags": sorted(rg_flags)},
+            )
+        )
+
+    if tags & {"panic_intent"}:
+        passed = (action == "panic_blocked") or "panic_sell_blocked" in rg_flags
+        results.append(
+            CheckResult(
+                "risk_gate_detects_panic_sell",
+                passed,
+                "high" if not passed else "info",
+                10 if passed else 0,
+                10,
+                "Risk gate detects panic sell intent" if passed else "Risk gate should detect panic sell intent and return panic_blocked",
+                {"action": action, "risk_flags": sorted(rg_flags)},
+            )
+        )
+
     return results
 
 
@@ -910,6 +1102,13 @@ def _get_field(output: Any, field: str) -> Any:
 
 def _get_number(output: Any, field: str) -> float | None:
     value = _get_field(output, field)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float_eval(value: Any) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):

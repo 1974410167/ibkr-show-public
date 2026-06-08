@@ -5,12 +5,22 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_agent_change_impact_service, get_agent_eval_service, get_agent_regression_gate_service, get_agent_regression_profile_service, require_admin_session
+from app.api.deps import get_agent_change_impact_service, get_agent_eval_service, get_agent_regression_gate_service, get_agent_regression_profile_service, get_baseline_health_report_service, get_eval_failure_mining_service, get_eval_simulation_service, get_failure_to_eval_case_service, get_judge_calibration_service, require_admin_session
+from app.agents.eval_simulation_scenarios import (
+    filter_synthetic_scenarios,
+    get_synthetic_scenario,
+    summarize_synthetic_scenarios,
+)
 from app.core.auth import AuthSession
 from app.services.agent_change_impact_service import AgentChangeImpactService
 from app.services.agent_eval_service import AgentEvalService
 from app.services.agent_regression_gate_service import AgentRegressionGateService
 from app.services.agent_regression_profile_service import RegressionProfileService
+from app.services.eval_simulation_service import SyntheticSimulationService
+from app.services.eval_failure_mining_service import SyntheticFailureMiningService
+from app.services.eval_failure_to_case_service import FailureToEvalCaseService
+from app.services.eval_baseline_health_service import BaselineHealthReportService
+from app.services.eval_judge_calibration_service import JudgeCalibrationService
 
 router = APIRouter(prefix="/admin/agent-eval", tags=["admin-agent-eval"])
 
@@ -126,6 +136,82 @@ class AgentRegressionRunRequest(BaseModel):
     node_name: str | None = None
 
 
+class SyntheticSimulationRunRequest(BaseModel):
+    scenario_ids: list[str] = Field(default_factory=list)
+    agent_name: str | None = None
+    tag: str | None = None
+    severity: str | None = None
+    category: str | None = None
+    limit: int = Field(default=10, ge=1, le=100)
+    dry_run: bool = True
+    executor_mode: str = "auto"
+    async_run: bool = False
+    name: str | None = None
+
+
+class FailureMiningRunRequest(BaseModel):
+    simulation_run_id: str
+    include_dry_run_results: bool = False
+    include_judge: bool = False
+    judge_model_config: dict[str, Any] = Field(default_factory=dict)
+    min_severity: str | None = None
+    max_failures: int = Field(default=100, ge=1, le=500)
+    deduplicate: bool = True
+    name: str | None = None
+
+
+class FailureCasePreviewRequest(BaseModel):
+    enabled: bool = False
+
+
+class FailureCaseConvertRequest(BaseModel):
+    enabled: bool = False
+    force: bool = False
+
+
+class FailureCaseBatchConvertRequest(BaseModel):
+    failure_mining_run_id: str | None = None
+    failure_ids: list[str] = Field(default_factory=list)
+    min_priority: int = 80
+    max_cases: int = Field(default=20, ge=1, le=100)
+    enabled: bool = False
+    force: bool = False
+
+
+class BaselineHealthReportRequest(BaseModel):
+    simulation_run_id: str | None = None
+    failure_mining_run_id: str | None = None
+    include_converted_cases: bool = True
+    include_correctness_summary: bool = True
+    name: str | None = None
+
+
+class JudgeCalibrationRunRequest(BaseModel):
+    failure_mining_run_id: str | None = None
+    baseline_report_id: str | None = None
+    agent_name: str | None = None
+    min_priority: int = Field(default=50, ge=0, le=100)
+    deduplicate: bool = True
+    name: str | None = None
+
+
+class JudgeCalibrationCasePreviewRequest(BaseModel):
+    enabled: bool = False
+
+
+class JudgeCalibrationCaseCreateRequest(BaseModel):
+    enabled: bool = False
+    force: bool = False
+
+
+class JudgeCalibrationBatchCreateRequest(BaseModel):
+    calibration_run_id: str
+    min_priority: int = Field(default=70, ge=0, le=100)
+    max_cases: int = Field(default=20, ge=1, le=100)
+    enabled: bool = False
+    force: bool = False
+
+
 @router.get("/coverage")
 def get_eval_coverage(
     agent_name: str | None = None,
@@ -154,6 +240,412 @@ def get_correctness_summary(
     """
     return service.get_correctness_summary(
         agent_name=agent_name, hours=hours, limit=limit,
+    )
+
+
+@router.get("/synthetic-scenarios")
+def list_admin_synthetic_scenarios(
+    agent_name: str | None = None,
+    tag: str | None = None,
+    severity: str | None = None,
+    category: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    _auth_session: AuthSession = Depends(require_admin_session),
+) -> dict:
+    return {
+        "items": filter_synthetic_scenarios(
+            agent_name=agent_name,
+            tag=tag,
+            severity=severity,
+            category=category,
+            limit=limit,
+        ),
+        "summary": summarize_synthetic_scenarios(),
+    }
+
+
+@router.get("/synthetic-scenarios/{scenario_id}")
+def get_admin_synthetic_scenario(
+    scenario_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+) -> dict:
+    scenario = get_synthetic_scenario(scenario_id)
+    if scenario is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Synthetic scenario not found")
+    return scenario
+
+
+@router.post("/simulations/run")
+def run_synthetic_simulation(
+    payload: SyntheticSimulationRunRequest,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticSimulationService = Depends(get_eval_simulation_service),
+) -> dict:
+    try:
+        if payload.async_run:
+            return service.start_scenarios_async(
+                scenario_ids=payload.scenario_ids or None,
+                agent_name=payload.agent_name,
+                tag=payload.tag,
+                severity=payload.severity,
+                category=payload.category,
+                limit=payload.limit,
+                dry_run=payload.dry_run,
+                executor_mode=payload.executor_mode,
+                name=payload.name,
+            )
+        return service.run_scenarios(
+            scenario_ids=payload.scenario_ids or None,
+            agent_name=payload.agent_name,
+            tag=payload.tag,
+            severity=payload.severity,
+            category=payload.category,
+            limit=payload.limit,
+            dry_run=payload.dry_run,
+            executor_mode=payload.executor_mode,
+            name=payload.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/simulations/runs")
+def list_synthetic_simulation_runs(
+    agent_name: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticSimulationService = Depends(get_eval_simulation_service),
+) -> dict:
+    return {"items": service.list_runs(agent_name=agent_name, status=status, limit=limit)}
+
+
+@router.get("/simulations/runs/{simulation_run_id}")
+def get_synthetic_simulation_run(
+    simulation_run_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticSimulationService = Depends(get_eval_simulation_service),
+) -> dict:
+    result = service.get_run_with_results(simulation_run_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Synthetic simulation run not found")
+    return result
+
+
+@router.get("/simulations/results/{simulation_result_id}")
+def get_synthetic_simulation_result(
+    simulation_result_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticSimulationService = Depends(get_eval_simulation_service),
+) -> dict:
+    result = service.get_result(simulation_result_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Synthetic simulation result not found")
+    return result
+
+
+@router.post("/failure-mining/run")
+def run_failure_mining(
+    payload: FailureMiningRunRequest,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticFailureMiningService = Depends(get_eval_failure_mining_service),
+) -> dict:
+    try:
+        return service.mine_simulation_run(
+            payload.simulation_run_id,
+            include_dry_run_results=payload.include_dry_run_results,
+            include_judge=payload.include_judge,
+            judge_model_config=payload.judge_model_config,
+            min_severity=payload.min_severity,
+            max_failures=payload.max_failures,
+            deduplicate=payload.deduplicate,
+            name=payload.name,
+        )
+    except ValueError as exc:
+        if str(exc) == "Simulation run not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/failure-mining/runs")
+def list_failure_mining_runs(
+    simulation_run_id: str | None = None,
+    agent_name: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticFailureMiningService = Depends(get_eval_failure_mining_service),
+) -> dict:
+    return {
+        "items": service.list_failure_mining_runs(
+            simulation_run_id=simulation_run_id,
+            agent_name=agent_name,
+            status=status,
+            limit=limit,
+        )
+    }
+
+
+@router.get("/failure-mining/runs/{failure_mining_run_id}")
+def get_failure_mining_run(
+    failure_mining_run_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticFailureMiningService = Depends(get_eval_failure_mining_service),
+) -> dict:
+    result = service.get_failure_mining_run_with_failures(failure_mining_run_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Failure mining run not found")
+    return result
+
+
+@router.get("/failure-mining/failures")
+def list_failure_mining_failures(
+    failure_mining_run_id: str | None = None,
+    simulation_run_id: str | None = None,
+    agent_name: str | None = None,
+    failure_type: str | None = None,
+    min_severity: str | None = None,
+    should_convert_to_eval_case: bool | None = None,
+    limit: int = Query(default=1000, ge=1, le=5000),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticFailureMiningService = Depends(get_eval_failure_mining_service),
+) -> dict:
+    return service.list_failure_items(
+        failure_mining_run_id=failure_mining_run_id,
+        simulation_run_id=simulation_run_id,
+        agent_name=agent_name,
+        failure_type=failure_type,
+        min_severity=min_severity,
+        should_convert_to_eval_case=should_convert_to_eval_case,
+        limit=limit,
+    )
+
+
+@router.get("/failure-mining/failures/{failure_id}")
+def get_failure_mining_failure(
+    failure_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: SyntheticFailureMiningService = Depends(get_eval_failure_mining_service),
+) -> dict:
+    failure = service.get_failure_item(failure_id)
+    if failure is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Failure item not found")
+    return failure
+
+
+@router.post("/failure-mining/failures/{failure_id}/preview-case")
+def preview_failure_eval_case(
+    failure_id: str,
+    payload: FailureCasePreviewRequest = FailureCasePreviewRequest(),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: FailureToEvalCaseService = Depends(get_failure_to_eval_case_service),
+) -> dict:
+    try:
+        return service.preview_case_from_failure(failure_id, enabled=payload.enabled)
+    except ValueError as exc:
+        if str(exc) in {"Failure item not found", "Synthetic scenario not found", "Simulation result not found"}:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post("/failure-mining/failures/{failure_id}/convert-case")
+def convert_failure_eval_case(
+    failure_id: str,
+    payload: FailureCaseConvertRequest = FailureCaseConvertRequest(),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: FailureToEvalCaseService = Depends(get_failure_to_eval_case_service),
+) -> dict:
+    try:
+        return service.convert_failure_to_case(failure_id, enabled=payload.enabled, force=payload.force)
+    except ValueError as exc:
+        if str(exc) in {"Failure item not found", "Synthetic scenario not found", "Simulation result not found"}:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post("/failure-mining/convert-cases")
+def batch_convert_failure_eval_cases(
+    payload: FailureCaseBatchConvertRequest,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: FailureToEvalCaseService = Depends(get_failure_to_eval_case_service),
+) -> dict:
+    return service.batch_convert_failures(
+        failure_mining_run_id=payload.failure_mining_run_id,
+        failure_ids=payload.failure_ids or None,
+        min_priority=payload.min_priority,
+        max_cases=payload.max_cases,
+        enabled=payload.enabled,
+        force=payload.force,
+    )
+
+
+@router.post("/baseline-health/reports")
+def create_baseline_health_report(
+    payload: BaselineHealthReportRequest,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: BaselineHealthReportService = Depends(get_baseline_health_report_service),
+) -> dict:
+    return service.generate_report(
+        simulation_run_id=payload.simulation_run_id,
+        failure_mining_run_id=payload.failure_mining_run_id,
+        include_converted_cases=payload.include_converted_cases,
+        include_correctness_summary=payload.include_correctness_summary,
+        name=payload.name,
+    )
+
+
+@router.get("/baseline-health/reports")
+def list_baseline_health_reports(
+    agent_name: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: BaselineHealthReportService = Depends(get_baseline_health_report_service),
+) -> dict:
+    return {"items": service.list_reports(agent_name=agent_name, status=status, limit=limit)}
+
+
+@router.get("/baseline-health/reports/{report_id}")
+def get_baseline_health_report(
+    report_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: BaselineHealthReportService = Depends(get_baseline_health_report_service),
+) -> dict:
+    report = service.get_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Baseline health report not found")
+    return report
+
+
+@router.get("/baseline-health/reports/{report_id}/markdown")
+def get_baseline_health_report_markdown(
+    report_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: BaselineHealthReportService = Depends(get_baseline_health_report_service),
+) -> dict:
+    report = service.get_report(report_id)
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Baseline health report not found")
+    return {"report_id": report_id, "markdown_report": report.get("markdown_report") or ""}
+
+
+@router.post("/judge-calibration/run")
+def run_judge_calibration(
+    payload: JudgeCalibrationRunRequest,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    try:
+        return service.detect_calibration_signals(
+            failure_mining_run_id=payload.failure_mining_run_id,
+            baseline_report_id=payload.baseline_report_id,
+            agent_name=payload.agent_name,
+            min_priority=payload.min_priority,
+            deduplicate=payload.deduplicate,
+            name=payload.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/judge-calibration/runs")
+def list_judge_calibration_runs(
+    agent_name: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    return {"items": service.list_runs(agent_name=agent_name, status=status, limit=limit)}
+
+
+@router.get("/judge-calibration/runs/{calibration_run_id}")
+def get_judge_calibration_run(
+    calibration_run_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    result = service.get_run_with_signals(calibration_run_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Judge calibration run not found")
+    return result
+
+
+@router.get("/judge-calibration/signals")
+def list_judge_calibration_signals(
+    calibration_run_id: str | None = None,
+    agent_name: str | None = None,
+    signal_type: str | None = None,
+    min_priority: int | None = Query(default=None, ge=0, le=100),
+    should_create_calibration_case: bool | None = None,
+    limit: int = Query(default=1000, ge=1, le=5000),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    return service.list_signals(
+        calibration_run_id=calibration_run_id,
+        agent_name=agent_name,
+        signal_type=signal_type,
+        min_priority=min_priority,
+        should_create_calibration_case=should_create_calibration_case,
+        limit=limit,
+    )
+
+
+@router.get("/judge-calibration/signals/{signal_id}")
+def get_judge_calibration_signal(
+    signal_id: str,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    signal = service.get_signal(signal_id)
+    if signal is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Judge calibration signal not found")
+    return signal
+
+
+@router.post("/judge-calibration/signals/{signal_id}/preview-case")
+def preview_judge_calibration_case(
+    signal_id: str,
+    payload: JudgeCalibrationCasePreviewRequest = JudgeCalibrationCasePreviewRequest(),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    try:
+        return service.preview_calibration_case(signal_id, enabled=payload.enabled)
+    except ValueError as exc:
+        if str(exc) == "Judge calibration signal not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post("/judge-calibration/signals/{signal_id}/create-case")
+def create_judge_calibration_case(
+    signal_id: str,
+    payload: JudgeCalibrationCaseCreateRequest = JudgeCalibrationCaseCreateRequest(),
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    try:
+        return service.create_calibration_case(signal_id, enabled=payload.enabled, force=payload.force)
+    except ValueError as exc:
+        if str(exc) == "Judge calibration signal not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post("/judge-calibration/create-cases")
+def batch_create_judge_calibration_cases(
+    payload: JudgeCalibrationBatchCreateRequest,
+    _auth_session: AuthSession = Depends(require_admin_session),
+    service: JudgeCalibrationService = Depends(get_judge_calibration_service),
+) -> dict:
+    return service.batch_create_calibration_cases(
+        calibration_run_id=payload.calibration_run_id,
+        min_priority=payload.min_priority,
+        max_cases=payload.max_cases,
+        enabled=payload.enabled,
+        force=payload.force,
     )
 
 

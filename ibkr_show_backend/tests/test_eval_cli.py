@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from app.cli.eval_harness import _evaluate_gate, main
+from app.services.eval_simulation_repository import InMemorySyntheticSimulationRepository
+from app.services.eval_simulation_service import SyntheticSimulationService
 from app.services.agent_eval_service import AgentEvalService
 
 
@@ -178,6 +181,439 @@ def test_run_output_json(monkeypatch, capsys):
     assert "summary" in data
     assert "gate" in data
     assert "skipped_judge_case_count" in data["gate"]
+
+
+def test_synthetic_scenarios_cli_json_summary(capsys):
+    ret = main(["synthetic-scenarios", "--summary", "--output", "json", "--agent-name", "trade_decision", "--limit", "2"])
+
+    assert ret == 0
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["summary"]["total_count"] >= 70
+    assert len(data["items"]) == 2
+    assert all(item["agent_name"] == "trade_decision" for item in data["items"])
+
+
+def test_synthetic_scenarios_cli_text_filter(capsys):
+    ret = main(["synthetic-scenarios", "--summary", "--tag", "missing_data", "--limit", "3"])
+
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "Synthetic scenarios:" in out
+    assert "missing_data" in out or "synthetic_" in out
+
+
+def _patch_simulation_service(monkeypatch):
+    calls = []
+
+    def build(*, use_in_memory: bool = False):
+        calls.append(use_in_memory)
+        return SyntheticSimulationService(InMemorySyntheticSimulationRepository())
+
+    monkeypatch.setattr("app.cli.eval_harness._build_simulation_service", build)
+    return calls
+
+
+def test_simulation_run_cli_dry_run_json(monkeypatch, capsys):
+    calls = _patch_simulation_service(monkeypatch)
+
+    ret = main([
+        "simulation-run",
+        "--agent-name",
+        "trade_decision",
+        "--tag",
+        "chase_high",
+        "--limit",
+        "2",
+        "--dry-run",
+        "--output",
+        "json",
+    ])
+
+    assert ret == 0
+    data = json.loads(capsys.readouterr().out)
+    assert calls == [False]
+    assert data["simulation_run"]["summary"]["scenario_count"] == 2
+    assert data["simulation_run"]["summary"]["dry_run"] is True
+    assert len(data["results"]) == 2
+    assert all(item["status"] == "skipped" for item in data["results"])
+
+
+def test_simulation_run_cli_in_memory_uses_in_memory_builder(monkeypatch, capsys):
+    calls = _patch_simulation_service(monkeypatch)
+
+    ret = main([
+        "simulation-run",
+        "--agent-name",
+        "account_copilot",
+        "--limit",
+        "1",
+        "--in-memory",
+        "--output",
+        "json",
+    ])
+
+    assert ret == 0
+    assert calls == [True]
+    assert json.loads(capsys.readouterr().out)["results"][0]["agent_name"] == "account_copilot"
+
+
+def test_simulation_run_cli_invalid_selector_returns_2(monkeypatch, capsys):
+    _patch_simulation_service(monkeypatch)
+
+    ret = main(["simulation-run", "--scenario-id", "missing", "--output", "json"])
+
+    assert ret == 2
+    err = capsys.readouterr().err
+    assert "Unknown synthetic scenario_id" in err
+
+
+def test_simulation_run_cli_output_file(monkeypatch, tmp_path, capsys):
+    _patch_simulation_service(monkeypatch)
+    outfile = tmp_path / "simulation.json"
+    ret = main([
+        "simulation-run",
+        "--agent-name",
+        "account_copilot",
+        "--limit",
+        "1",
+        "--output",
+        "json",
+        "--output-file",
+        str(outfile),
+    ])
+
+    assert ret == 0
+    assert "Written to" in capsys.readouterr().out
+    data = json.loads(outfile.read_text())
+    assert data["results"][0]["agent_name"] == "account_copilot"
+
+
+def test_cli_simulation_run_output_can_be_mined_with_shared_repository(monkeypatch, capsys):
+    sim_repo = InMemorySyntheticSimulationRepository()
+    failure_repo = None
+
+    def build_simulation(*, use_in_memory: bool = False):
+        return SyntheticSimulationService(sim_repo)
+
+    def build_failure_mining():
+        nonlocal failure_repo
+        from app.services.eval_failure_mining_repository import InMemorySyntheticFailureMiningRepository
+        from app.services.eval_failure_mining_service import SyntheticFailureMiningService
+
+        failure_repo = InMemorySyntheticFailureMiningRepository()
+        return SyntheticFailureMiningService(failure_repository=failure_repo, simulation_repository=sim_repo)
+
+    monkeypatch.setattr("app.cli.eval_harness._build_simulation_service", build_simulation)
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_mining_service", build_failure_mining)
+
+    sim_ret = main([
+        "simulation-run",
+        "--agent-name",
+        "trade_decision",
+        "--tag",
+        "chase_high",
+        "--limit",
+        "1",
+        "--dry-run",
+        "--output",
+        "json",
+    ])
+    sim_data = json.loads(capsys.readouterr().out)
+    mining_ret = main([
+        "failure-mining",
+        "--simulation-run-id",
+        sim_data["simulation_run"]["simulation_run_id"],
+        "--include-dry-run-results",
+        "--output",
+        "json",
+    ])
+    mining_data = json.loads(capsys.readouterr().out)
+
+    assert sim_ret == 0
+    assert mining_ret == 0
+    assert mining_data["failure_mining_run"]["simulation_run_id"] == sim_data["simulation_run"]["simulation_run_id"]
+
+
+class FakeFailureMiningCliService:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def mine_simulation_run(self, simulation_run_id: str, **kwargs):
+        self.calls.append({"simulation_run_id": simulation_run_id, **kwargs})
+        if simulation_run_id == "missing":
+            raise ValueError("Simulation run not found")
+        return {
+            "failure_mining_run": {
+                "failure_mining_run_id": "fm-run-1",
+                "simulation_run_id": simulation_run_id,
+                "status": "completed",
+            },
+            "failures": [
+                {
+                    "failure_id": "failure-1",
+                    "agent_name": "trade_decision",
+                    "severity": "high",
+                    "failure_type": "missing_risk_control",
+                }
+            ],
+            "summary": {"failure_count": 1, "critical_count": 0, "high_count": 1, "suggested_eval_case_count": 1},
+        }
+
+
+def test_failure_mining_cli_json(monkeypatch, capsys):
+    service = FakeFailureMiningCliService()
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_mining_service", lambda: service)
+
+    ret = main(["failure-mining", "--simulation-run-id", "sim-1", "--min-severity", "medium", "--output", "json"])
+
+    assert ret == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["failure_mining_run"]["failure_mining_run_id"] == "fm-run-1"
+    assert data["summary"]["failure_count"] == 1
+    assert service.calls[0]["include_dry_run_results"] is False
+
+
+def test_failure_mining_cli_can_include_dry_run_results(monkeypatch, capsys):
+    service = FakeFailureMiningCliService()
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_mining_service", lambda: service)
+
+    ret = main(["failure-mining", "--simulation-run-id", "sim-1", "--include-dry-run-results", "--output", "json"])
+
+    assert ret == 0
+    capsys.readouterr()
+    assert service.calls[0]["include_dry_run_results"] is True
+
+
+def test_failure_mining_cli_param_error(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_mining_service", lambda: FakeFailureMiningCliService())
+
+    ret = main(["failure-mining", "--simulation-run-id", "missing", "--output", "json"])
+
+    assert ret == 2
+    assert "Simulation run not found" in capsys.readouterr().err
+
+
+def test_failure_mining_cli_output_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_mining_service", lambda: FakeFailureMiningCliService())
+    outfile = tmp_path / "failure-mining.json"
+
+    ret = main(["failure-mining", "--simulation-run-id", "sim-1", "--output", "json", "--output-file", str(outfile)])
+
+    assert ret == 0
+    assert "Written to" in capsys.readouterr().out
+    assert json.loads(outfile.read_text())["failures"][0]["failure_id"] == "failure-1"
+
+
+class FakeFailureToCaseCliService:
+    def preview_case_from_failure(self, failure_id: str, *, enabled: bool = False):
+        return {
+            "draft": {
+                "draft_id": "draft-1",
+                "failure_id": failure_id,
+                "case_payload": {"case_id": "case-1", "enabled": enabled},
+                "quality_score": 0.9,
+            },
+            "quality": {"eligible": True, "quality_score": 0.9},
+        }
+
+    def convert_failure_to_case(self, failure_id: str, *, enabled: bool = False, force: bool = False):
+        return {
+            "failure_id": failure_id,
+            "draft_id": "draft-1",
+            "case_id": "case-1",
+            "status": "saved",
+            "reason": "ok",
+            "case_payload": {"case_id": "case-1", "enabled": enabled},
+            "metadata": {"forced": force},
+        }
+
+    def batch_convert_failures(self, **kwargs):
+        return {
+            "converted_count": 1,
+            "skipped_count": 0,
+            "duplicate_count": 0,
+            "error_count": 0,
+            "results": [{"failure_id": "failure-1", "status": "saved", "case_id": "case-1"}],
+        }
+
+
+def test_failure_to_case_cli_preview_json(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_to_case_service", lambda: FakeFailureToCaseCliService())
+
+    ret = main(["failure-to-case", "--failure-id", "failure-1", "--preview", "--output", "json"])
+
+    assert ret == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["draft"]["case_payload"]["enabled"] is False
+
+
+def test_failure_to_case_cli_convert_json(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_to_case_service", lambda: FakeFailureToCaseCliService())
+
+    ret = main(["failure-to-case", "--failure-id", "failure-1", "--convert", "--output", "json"])
+
+    assert ret == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "saved"
+    assert data["case_payload"]["enabled"] is False
+
+
+def test_failure_to_case_cli_batch_output_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_failure_to_case_service", lambda: FakeFailureToCaseCliService())
+    outfile = tmp_path / "failure-to-case.json"
+
+    ret = main([
+        "failure-to-case",
+        "--failure-mining-run-id",
+        "fm-1",
+        "--batch",
+        "--output",
+        "json",
+        "--output-file",
+        str(outfile),
+    ])
+
+    assert ret == 0
+    assert "Written to" in capsys.readouterr().out
+    assert json.loads(outfile.read_text())["converted_count"] == 1
+
+
+def test_failure_to_case_cli_requires_exactly_one_action(capsys):
+    ret = main(["failure-to-case", "--failure-id", "failure-1", "--output", "json"])
+
+    assert ret == 2
+    assert "choose exactly one" in capsys.readouterr().err
+
+
+class FakeBaselineHealthCliService:
+    def generate_report(self, **kwargs):
+        return {
+            "report_id": "report-1",
+            "status": "completed",
+            "summary": {"overall_health_score": 0.8, "failure_count": 2, "suggested_eval_case_count": 1},
+            "markdown_report": "# Eval P3.5 Baseline Health Report\n\n## Summary\n\n## Recommendations\n\n## Architecture Signals\n",
+        }
+
+
+def test_baseline_health_report_cli_json(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_baseline_health_report_service", lambda: FakeBaselineHealthCliService())
+
+    ret = main(["baseline-health-report", "--simulation-run-id", "sim-1", "--failure-mining-run-id", "fm-1", "--output", "json"])
+
+    assert ret == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["report_id"] == "report-1"
+    assert data["summary"]["failure_count"] == 2
+
+
+def test_baseline_health_report_cli_markdown(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_baseline_health_report_service", lambda: FakeBaselineHealthCliService())
+
+    ret = main(["baseline-health-report", "--output", "markdown"])
+
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "# Eval P3.5 Baseline Health Report" in out
+    assert "## Recommendations" in out
+
+
+def test_baseline_health_report_cli_output_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_baseline_health_report_service", lambda: FakeBaselineHealthCliService())
+    outfile = tmp_path / "baseline.md"
+
+    ret = main(["baseline-health-report", "--output", "markdown", "--output-file", str(outfile)])
+
+    assert ret == 0
+    assert "Written to" in capsys.readouterr().out
+    assert "Architecture Signals" in outfile.read_text()
+
+
+class FakeJudgeCalibrationCliService:
+    def detect_calibration_signals(self, **kwargs):
+        return {
+            "calibration_run": {
+                "calibration_run_id": "cal-run-1",
+                "source_type": "failure_mining_run",
+                "source_id": kwargs.get("failure_mining_run_id"),
+                "status": "completed",
+            },
+            "signals": [{"signal_id": "signal-1", "signal_type": "judge_too_lenient"}],
+            "suggestions": [{"suggestion_id": "suggestion-1"}],
+            "summary": {"signal_count": 1, "case_candidate_count": 1},
+        }
+
+    def preview_calibration_case(self, signal_id: str, *, enabled: bool = False):
+        return {
+            "draft": {
+                "draft_id": "draft-1",
+                "signal_id": signal_id,
+                "case_payload": {"case_id": "case-1", "enabled": enabled},
+                "quality_score": 0.9,
+            },
+            "quality": {"eligible": True},
+        }
+
+    def create_calibration_case(self, signal_id: str, *, enabled: bool = False, force: bool = False):
+        return {
+            "signal_id": signal_id,
+            "case_id": "case-1",
+            "status": "saved",
+            "case_payload": {"enabled": enabled},
+            "metadata": {"forced": force},
+        }
+
+    def batch_create_calibration_cases(self, **kwargs):
+        return {
+            "created_count": 1,
+            "skipped_count": 0,
+            "duplicate_count": 0,
+            "error_count": 0,
+            "results": [{"signal_id": "signal-1", "status": "saved"}],
+        }
+
+
+def test_judge_calibration_cli_json(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_judge_calibration_service", lambda: FakeJudgeCalibrationCliService())
+
+    ret = main(["judge-calibration", "--failure-mining-run-id", "fm-1", "--output", "json"])
+
+    assert ret == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["calibration_run"]["calibration_run_id"] == "cal-run-1"
+    assert data["summary"]["signal_count"] == 1
+
+
+def test_judge_calibration_case_cli_preview_json(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_judge_calibration_service", lambda: FakeJudgeCalibrationCliService())
+
+    ret = main(["judge-calibration-case", "--signal-id", "signal-1", "--preview", "--output", "json"])
+
+    assert ret == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["draft"]["case_payload"]["enabled"] is False
+
+
+def test_judge_calibration_case_cli_create_and_batch(monkeypatch, capsys):
+    monkeypatch.setattr("app.cli.eval_harness._build_judge_calibration_service", lambda: FakeJudgeCalibrationCliService())
+
+    create_ret = main(["judge-calibration-case", "--signal-id", "signal-1", "--create", "--output", "json"])
+    create_data = json.loads(capsys.readouterr().out)
+    batch_ret = main(["judge-calibration-case", "--calibration-run-id", "cal-run-1", "--batch", "--max-cases", "1", "--output", "json"])
+    batch_data = json.loads(capsys.readouterr().out)
+
+    assert create_ret == 0
+    assert create_data["status"] == "saved"
+    assert create_data["case_payload"]["enabled"] is False
+    assert batch_ret == 0
+    assert batch_data["created_count"] == 1
+
+
+def test_judge_calibration_case_cli_requires_exactly_one_action(capsys):
+    ret = main(["judge-calibration-case", "--signal-id", "signal-1", "--output", "json"])
+
+    assert ret == 2
+    assert "choose exactly one" in capsys.readouterr().err
 
 
 def test_run_json_output_skipped_judge_count(monkeypatch, capsys):

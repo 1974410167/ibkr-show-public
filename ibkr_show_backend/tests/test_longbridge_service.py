@@ -15,8 +15,9 @@ def test_normalize_longbridge_symbol_defaults_plain_ticker_to_us() -> None:
     assert normalize_longbridge_symbol("700.HK") == "700.HK"
 
 
-def test_longbridge_health_returns_not_configured_when_openapi_client_id_missing(monkeypatch) -> None:
+def test_longbridge_health_returns_not_configured_when_openapi_client_id_missing(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("LONGBRIDGE_OPENAPI_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.setenv("LONGBRIDGE_OPENAPI_OAUTH_FILE", str(tmp_path / "longbridge_oauth.json"))
     monkeypatch.setenv("LONGBRIDGE_ENABLE", "true")
     get_settings.cache_clear()
 

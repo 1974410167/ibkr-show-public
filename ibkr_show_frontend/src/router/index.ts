@@ -164,6 +164,19 @@ const router = createRouter({
         requiresAuth: true,
       },
     },
+    {
+      path: '/market-events',
+      name: 'market-events',
+      component: () => import('@/views/MarketEventsView.vue'),
+    },
+    {
+      path: '/admin/market-events',
+      name: 'admin-market-events',
+      component: () => import('@/views/AdminMarketEventsView.vue'),
+      meta: {
+        requiresAuth: true,
+      },
+    },
   ],
 })
 

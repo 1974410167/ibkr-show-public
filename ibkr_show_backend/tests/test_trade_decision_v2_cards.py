@@ -363,6 +363,7 @@ class TestRiskRewardSubAgent:
         snapshot = _make_snapshot(symbol="AAPL")
         snapshot.avg_cost = 145.0
         snapshot.is_holding = True
+        snapshot.current_price = 150.0
 
         account_fit_card = _make_fallback_card("account_fit", "AAPL", "entry_decision")
         account_fit_card.max_suggested_position_pct = 0.05
@@ -370,17 +371,44 @@ class TestRiskRewardSubAgent:
 
         market_trend_card = _make_fallback_card("market_trend", "AAPL", "entry_decision")
         market_trend_card.recent_return_pct = 3.5
+        # Give the engine at least one upside signal via technical_signals
+        market_trend_card.technical_signals = {
+            "resistance_levels": [165, 180],
+            "support_levels": [140, 130],
+            "ma200": 145,
+            "ma50": 148,
+            "ma20": 150,
+            "atr14": 4.0,
+            "atr14_pct": 2.7,
+            "volume_ratio": 1.0,
+            "return_20d_pct": 3.5,
+            "relative_strength_20d": {},
+            "relative_strength_60d": {},
+            "trend_break_level": "none",
+            "trend_break_reasons": [],
+            "data_limitations": [],
+            "relative_strength_score": None,
+        }
 
         fundamental_card = _make_fallback_card("fundamental", "AAPL", "entry_decision")
         fundamental_card.pe_ttm = 22.0
         fundamental_card.market_cap = None
+        fundamental_card.target_price = 180.0
+        fundamental_card.fundamental_status = "green"
 
         event_card = _make_fallback_card("event", "AAPL", "entry_decision")
 
         card, trace = sub_agent.generate(snapshot, account_fit_card, market_trend_card, fundamental_card, event_card)
         # Should have used the account_fit card
         assert card is not None
+        # With technical signals + target_price the engine should compute a
+        # positive upside. The numeric value is the engine's deterministic
+        # output, not the old +30% heuristic.
+        assert card.upside_potential_pct is not None
         assert card.upside_potential_pct > 0
+        # Downside must NOT be derived from avg_cost
+        assert card.downside_scenarios  # non-empty
+        assert all("cost" not in str(s.get("scenario") or "").lower() for s in card.downside_scenarios)
 
     @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
     def test_risk_reward_llm_enhances_text_fields_only(self, mock_so_runtime_cls):
@@ -417,10 +445,31 @@ class TestRiskRewardSubAgent:
 
         market_trend_card = _make_fallback_card("market_trend", "AAPL", "entry_decision")
         market_trend_card.recent_return_pct = 5.0
+        # Feed the RiskRewardEngine enough technical signals to compute
+        # both upside and downside.
+        market_trend_card.technical_signals = {
+            "resistance_levels": [170],
+            "support_levels": [140],
+            "ma200": 145,
+            "ma50": 148,
+            "ma20": 150,
+            "atr14": 3.0,
+            "atr14_pct": 2.0,
+            "volume_ratio": 1.0,
+            "return_20d_pct": 5.0,
+            "relative_strength_20d": {},
+            "relative_strength_60d": {},
+            "trend_break_level": "none",
+            "trend_break_reasons": [],
+            "data_limitations": [],
+            "relative_strength_score": None,
+        }
 
         fundamental_card = _make_fallback_card("fundamental", "AAPL", "entry_decision")
         fundamental_card.pe_ttm = 25.0
         fundamental_card.market_cap = 3000e9
+        fundamental_card.target_price = 170.0
+        fundamental_card.fundamental_status = "green"
 
         event_card = _make_fallback_card("event", "AAPL", "entry_decision")
 
@@ -428,18 +477,216 @@ class TestRiskRewardSubAgent:
 
         # LLM-enhanced text fields should be updated
         assert card.summary == "LLM增强的风险收益分析摘要"
-        assert card.key_risks == ["估值偏高风险", "行业周期下行风险"]
-        assert card.key_opportunities == ["业绩超预期机会", "技术面突破机会"]
+
+        # key_risks / key_opportunities: MERGE semantics. The engine's
+        # structural risks (e.g. ma200_distance / support_distance / ATR)
+        # come FIRST; the LLM risks are appended. Verify both layers are
+        # present.
+        assert isinstance(card.key_risks, list)
+        # Engine risks are the deterministic scenarios (MA200/support/ATR)
+        # and must be preserved.
+        assert any("距离" in r or "%" in r for r in card.key_risks)
+        # LLM risks are appended
+        assert "估值偏高风险" in card.key_risks
+        assert "行业周期下行风险" in card.key_risks
+
+        assert isinstance(card.key_opportunities, list)
+        assert "业绩超预期机会" in card.key_opportunities
+        assert "技术面突破机会" in card.key_opportunities
 
         # Core numeric fields must NOT be changed by LLM
-        assert card.score in (4, 8, 12)
+        assert card.score in (4, 8, 12, 14)
+        assert card.reward_risk_ratio is not None
         assert card.reward_risk_ratio > 0
+        assert card.upside_potential_pct is not None
         assert card.upside_potential_pct > 0
+        assert card.downside_risk_pct is not None
         assert card.downside_risk_pct > 0
+
+        # risk_assessment_reason must preserve the engine seed and
+        # append the LLM contribution.
+        assert "RiskRewardEngine" in (card.risk_assessment_reason or "")
+        assert "综合评估后认为风险可控" in (card.risk_assessment_reason or "")
 
         # Trace should record structured output
         assert trace.structured_output is not None
         assert trace.rounds_used == 1
+
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_llm_empty_data_limitations_preserves_engine_seeds(self, mock_so_runtime_cls):
+        """When the LLM returns data_limitations=[] (or no key), the
+        engine's structural data_limitations must NOT be wiped."""
+        import json as _json
+
+        llm_output = {
+            "summary": "x",
+            "key_risks": ["LLM-only risk"],
+            "key_opportunities": ["LLM-only opp"],
+            "data_limitations": [],
+            "risk_assessment_reason": "LLM-only reason",
+        }
+        mock_so_result = MagicMock()
+        mock_so_result.ok = True
+        mock_so_result.payload = llm_output
+        mock_so_result.metadata = {"ok": True}
+        mock_so_runtime = MagicMock()
+        mock_so_runtime.parse_validate_repair.return_value = mock_so_result
+        mock_so_runtime_cls.return_value = mock_so_runtime
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = _json.dumps(llm_output)
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+        snapshot.current_price = 150.0
+        # Empty technical signals force the engine to surface data_limitations
+        market_trend = _make_fallback_card("market_trend", "AAPL", "entry_decision")
+        market_trend.technical_signals = {
+            "resistance_levels": [], "support_levels": [],
+            "ma200": None, "ma50": None, "ma20": None,
+            "atr14": None, "atr14_pct": None, "volume_ratio": None,
+            "return_20d_pct": None, "return_60d_pct": None,
+            "relative_strength_20d": {}, "relative_strength_60d": {},
+            "trend_break_level": "unknown", "trend_break_reasons": [],
+            "data_limitations": [], "relative_strength_score": None,
+        }
+        fund = _make_fallback_card("fundamental", "AAPL", "entry_decision")
+        fund.fundamental_status = "green"
+        card, _trace = sub_agent.generate(
+            snapshot,
+            _make_fallback_card("account_fit", "AAPL", "entry_decision"),
+            market_trend,
+            fund,
+            _make_fallback_card("event", "AAPL", "entry_decision"),
+        )
+        # Engine structural limitations must be present even when LLM
+        # returned data_limitations=[].
+        assert isinstance(card.data_limitations, list)
+        assert len(card.data_limitations) > 0
+        # The LLM-only key_risks were appended (merge) - not overwritten
+        assert "LLM-only risk" in card.key_risks
+        assert "LLM-only opp" in card.key_opportunities
+        # risk_assessment_reason still has the engine seed
+        assert "RiskRewardEngine" in (card.risk_assessment_reason or "")
+
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_llm_data_limitations_are_merged_with_engine(self, mock_so_runtime_cls):
+        """Both engine and LLM data_limitations survive."""
+        import json as _json
+
+        llm_output = {
+            "summary": "x",
+            "key_risks": ["LLM风险"],
+            "key_opportunities": [],
+            "data_limitations": ["LLM 限制: 缺少 forward PE"],
+            "risk_assessment_reason": "LLM reason",
+        }
+        mock_so_result = MagicMock()
+        mock_so_result.ok = True
+        mock_so_result.payload = llm_output
+        mock_so_result.metadata = {"ok": True}
+        mock_so_runtime = MagicMock()
+        mock_so_runtime.parse_validate_repair.return_value = mock_so_result
+        mock_so_runtime_cls.return_value = mock_so_runtime
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = _json.dumps(llm_output)
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+        snapshot.current_price = 150.0
+        # Construct a card pack that causes the engine to produce
+        # data_limitations (no benchmarks -> no relative strength etc.)
+        market_trend = _make_fallback_card("market_trend", "AAPL", "entry_decision")
+        market_trend.technical_signals = {
+            # Empty / partial inputs force the engine to surface
+            # structural data_limitations
+            "resistance_levels": [],
+            "support_levels": [],
+            "ma200": None, "ma50": None, "ma20": None,
+            "atr14": None, "atr14_pct": None, "volume_ratio": None,
+            "return_20d_pct": None, "return_60d_pct": None,
+            "relative_strength_20d": {}, "relative_strength_60d": {},
+            "trend_break_level": "unknown", "trend_break_reasons": [],
+            "data_limitations": [],
+            "relative_strength_score": None,
+        }
+        fund = _make_fallback_card("fundamental", "AAPL", "entry_decision")
+        # No target_price -> engine surfaces "上行空间参数不足"
+        fund.fundamental_status = "green"
+        card, _trace = sub_agent.generate(
+            snapshot,
+            _make_fallback_card("account_fit", "AAPL", "entry_decision"),
+            market_trend,
+            fund,
+            _make_fallback_card("event", "AAPL", "entry_decision"),
+        )
+        # Both layers' data_limitations are present
+        llm_present = any("LLM" in s for s in card.data_limitations)
+        assert llm_present, f"LLM limitation missing: {card.data_limitations}"
+        # Engine also surfaces its own (上行 / 技术信号 / 估值 etc.)
+        assert len(card.data_limitations) >= 2, (
+            f"merge did not preserve engine seed: {card.data_limitations}"
+        )
+
+    @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
+    def test_engine_key_risks_not_overwritten_by_llm(self, mock_so_runtime_cls):
+        """Engine structural risks must remain after LLM enhancement."""
+        import json as _json
+
+        llm_output = {
+            "summary": "x",
+            "key_risks": ["ONLY_LLM_RISK"],
+            "key_opportunities": ["ONLY_LLM_OPP"],
+            "data_limitations": [],
+            "risk_assessment_reason": "x",
+        }
+        mock_so_result = MagicMock()
+        mock_so_result.ok = True
+        mock_so_result.payload = llm_output
+        mock_so_result.metadata = {"ok": True}
+        mock_so_runtime = MagicMock()
+        mock_so_runtime.parse_validate_repair.return_value = mock_so_result
+        mock_so_runtime_cls.return_value = mock_so_runtime
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = _json.dumps(llm_output)
+        sub_agent = RiskRewardSubAgent(mock_llm)
+
+        snapshot = _make_snapshot()
+        snapshot.current_price = 150.0
+        market_trend = _make_fallback_card("market_trend", "AAPL", "entry_decision")
+        market_trend.technical_signals = {
+            "resistance_levels": [165],
+            "support_levels": [140],
+            "ma200": 145, "ma50": 148, "ma20": 150,
+            "atr14": 3.0, "atr14_pct": 2.0, "volume_ratio": 1.0,
+            "return_20d_pct": 3.5,
+            "relative_strength_20d": {}, "relative_strength_60d": {},
+            "trend_break_level": "none", "trend_break_reasons": [],
+            "data_limitations": [],
+            "relative_strength_score": None,
+        }
+        fund = _make_fallback_card("fundamental", "AAPL", "entry_decision")
+        fund.target_price = 180.0
+        fund.fundamental_status = "green"
+        card, _trace = sub_agent.generate(
+            snapshot,
+            _make_fallback_card("account_fit", "AAPL", "entry_decision"),
+            market_trend,
+            fund,
+            _make_fallback_card("event", "AAPL", "entry_decision"),
+        )
+        # The engine's structural risks (ma200_distance, support_distance,
+        # atr_2_5x) must still be present.
+        assert "ONLY_LLM_RISK" in card.key_risks
+        engine_structural_present = any(
+            ("距离" in r or "atr" in r.lower() or "ma200" in r.lower() or "support" in r.lower())
+            for r in card.key_risks
+        )
+        assert engine_structural_present, (
+            f"engine structural risks wiped out: {card.key_risks}"
+        )
 
     @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
     def test_risk_reward_llm_invalid_json_returns_base_card(self, mock_so_runtime_cls):
@@ -776,9 +1023,13 @@ class TestRiskRewardLLMRiskAssessmentReason:
         snapshot = _make_snapshot()
         card, trace = sub_agent.generate(snapshot)
 
-        assert card.risk_assessment_reason == "综合评估风险可控，收益空间合理"
+        # risk_assessment_reason is MERGED: the engine seed stays, the
+        # LLM text is appended after a " | LLM: " separator.
+        assert "RiskRewardEngine" in (card.risk_assessment_reason or "")
+        assert "综合评估风险可控，收益空间合理" in (card.risk_assessment_reason or "")
         assert card.summary == "LLM增强摘要"
-        assert card.key_risks == ["风险1"]
+        # key_risks: engine seed + LLM seed merged
+        assert "风险1" in card.key_risks
 
     @patch("app.services.trade_decision_sub_agents.StructuredOutputRuntime")
     def test_llm_without_risk_assessment_reason_leaves_none(self, mock_so_runtime_cls):
@@ -805,9 +1056,16 @@ class TestRiskRewardLLMRiskAssessmentReason:
         sub_agent = RiskRewardSubAgent(mock_llm)
 
         snapshot = _make_snapshot()
+        # Give the engine minimal inputs so it produces a non-None result.
+        snapshot.current_price = 150.0
         card, trace = sub_agent.generate(snapshot)
 
-        assert card.risk_assessment_reason is None
+        # The deterministic engine now seeds risk_assessment_reason. The LLM
+        # enhancement keeps the engine's value when the LLM doesn't provide
+        # its own. The test below verifies the LLM did NOT overwrite it.
+        assert card.risk_assessment_reason is not None
+        # It must be the engine seed, not the LLM value (which is None).
+        assert "RiskRewardEngine" in str(card.risk_assessment_reason)
         assert card.summary == "LLM摘要"
 
 

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_agent_change_impact_service, get_agent_eval_service, get_agent_regression_gate_service, get_agent_regression_profile_service, require_admin_session
+from app.api.deps import get_agent_change_impact_service, get_agent_eval_service, get_agent_regression_gate_service, get_agent_regression_profile_service, get_baseline_health_report_service, get_eval_failure_mining_service, get_eval_simulation_service, get_failure_to_eval_case_service, get_judge_calibration_service, require_admin_session
 from app.main import app
 
 client = TestClient(app)
@@ -58,6 +58,214 @@ class FakeAgentEvalService:
         return None if eval_run_id == "missing" else {"eval_run_id": eval_run_id}
 
 
+class FakeSyntheticSimulationService:
+    def __init__(self) -> None:
+        self.run = {
+            "simulation_run_id": "sim-run-1",
+            "status": "completed",
+            "agent_names": ["trade_decision"],
+            "summary": {"scenario_count": 1, "dry_run": True},
+        }
+        self.result = {
+            "simulation_result_id": "sim-result-1",
+            "simulation_run_id": "sim-run-1",
+            "scenario_id": "synthetic_trade_decision_chase_high_001",
+            "agent_name": "trade_decision",
+            "status": "skipped",
+        }
+
+    def run_scenarios(self, **kwargs):
+        if kwargs.get("executor_mode") == "bad":
+            raise ValueError("Invalid executor_mode")
+        self.run["config"] = kwargs
+        return {"simulation_run": self.run, "results": [self.result]}
+
+    def start_scenarios_async(self, **kwargs):
+        if kwargs.get("executor_mode") == "bad":
+            raise ValueError("Invalid executor_mode")
+        self.run["status"] = "running"
+        self.run["config"] = {**kwargs, "async_run": True}
+        self.run["metadata"] = {"async_run": True, "background_thread_started": True}
+        return {"simulation_run": self.run, "results": []}
+
+    def list_runs(self, **kwargs):
+        return [self.run]
+
+    def get_run_with_results(self, simulation_run_id: str, **kwargs):
+        if simulation_run_id == "missing":
+            return None
+        return {"simulation_run": self.run, "results": [self.result]}
+
+    def get_result(self, simulation_result_id: str):
+        if simulation_result_id == "missing":
+            return None
+        return self.result
+
+
+class FakeFailureMiningService:
+    def __init__(self) -> None:
+        self.run = {
+            "failure_mining_run_id": "fm-run-1",
+            "simulation_run_id": "sim-run-1",
+            "status": "completed",
+            "summary": {"failure_count": 1, "by_agent": {"trade_decision": 1}},
+        }
+        self.failure = {
+            "failure_id": "failure-1",
+            "failure_mining_run_id": "fm-run-1",
+            "simulation_run_id": "sim-run-1",
+            "agent_name": "trade_decision",
+            "failure_type": "missing_risk_control",
+            "severity": "high",
+            "should_convert_to_eval_case": True,
+        }
+
+    def mine_simulation_run(self, simulation_run_id: str, **kwargs):
+        if simulation_run_id == "missing":
+            raise ValueError("Simulation run not found")
+        self.run["config"] = kwargs
+        return {"failure_mining_run": self.run, "failures": [self.failure], "summary": self.run["summary"]}
+
+    def list_failure_mining_runs(self, **kwargs):
+        return [self.run]
+
+    def get_failure_mining_run_with_failures(self, failure_mining_run_id: str, **kwargs):
+        if failure_mining_run_id == "missing":
+            return None
+        return {"failure_mining_run": self.run, "failures": [self.failure], "summary": self.run["summary"]}
+
+    def list_failure_items(self, **kwargs):
+        return {"items": [self.failure], "summary": {"failure_count": 1}}
+
+    def get_failure_item(self, failure_id: str):
+        if failure_id == "missing":
+            return None
+        return self.failure
+
+
+class FakeFailureToCaseService:
+    def preview_case_from_failure(self, failure_id: str, *, enabled: bool = False):
+        if failure_id == "missing":
+            raise ValueError("Failure item not found")
+        return {
+            "draft": {
+                "draft_id": "draft-1",
+                "failure_id": failure_id,
+                "case_payload": {"case_id": "case-1", "enabled": enabled},
+                "quality_score": 0.9,
+            },
+            "quality": {"eligible": True, "quality_score": 0.9, "warnings": []},
+            "duplicate": None,
+        }
+
+    def convert_failure_to_case(self, failure_id: str, *, enabled: bool = False, force: bool = False):
+        if failure_id == "missing":
+            raise ValueError("Failure item not found")
+        return {
+            "failure_id": failure_id,
+            "draft_id": "draft-1",
+            "case_id": "case-1",
+            "status": "saved",
+            "reason": "ok",
+            "case_payload": {"case_id": "case-1", "enabled": enabled},
+            "metadata": {"forced": force},
+        }
+
+    def batch_convert_failures(self, **kwargs):
+        return {
+            "converted_count": 1,
+            "skipped_count": 0,
+            "duplicate_count": 0,
+            "error_count": 0,
+            "results": [{"failure_id": "failure-1", "status": "saved", "case_id": "case-1"}],
+        }
+
+
+class FakeBaselineHealthReportService:
+    def __init__(self) -> None:
+        self.report = {
+            "report_id": "report-1",
+            "status": "completed",
+            "summary": {"failure_count": 1},
+            "by_agent": [{"agent_name": "trade_decision"}],
+            "markdown_report": "# Eval P3.5 Baseline Health Report\n\n## Summary\n",
+        }
+
+    def generate_report(self, **kwargs):
+        self.report["config"] = kwargs
+        return self.report
+
+    def list_reports(self, **kwargs):
+        return [self.report]
+
+    def get_report(self, report_id: str):
+        if report_id == "missing":
+            return None
+        return self.report
+
+
+class FakeJudgeCalibrationService:
+    def __init__(self) -> None:
+        self.run = {
+            "calibration_run_id": "cal-run-1",
+            "source_type": "failure_mining_run",
+            "source_id": "fm-run-1",
+            "status": "completed",
+            "summary": {"signal_count": 1, "by_agent": {"trade_decision": 1}},
+            "suggestions": [{"suggestion_id": "suggestion-1"}],
+        }
+        self.signal = {
+            "signal_id": "signal-1",
+            "calibration_run_id": "cal-run-1",
+            "agent_name": "trade_decision",
+            "signal_type": "judge_too_lenient",
+            "priority": 90,
+            "should_create_calibration_case": True,
+        }
+
+    def detect_calibration_signals(self, **kwargs):
+        self.run["config"] = kwargs
+        return {"calibration_run": self.run, "signals": [self.signal], "suggestions": self.run["suggestions"], "summary": self.run["summary"]}
+
+    def list_runs(self, **kwargs):
+        return [self.run]
+
+    def get_run_with_signals(self, calibration_run_id: str, **kwargs):
+        if calibration_run_id == "missing":
+            return None
+        return {"calibration_run": self.run, "signals": [self.signal], "suggestions": self.run["suggestions"], "summary": self.run["summary"]}
+
+    def list_signals(self, **kwargs):
+        return {"items": [self.signal], "summary": {"signal_count": 1}}
+
+    def get_signal(self, signal_id: str):
+        if signal_id == "missing":
+            return None
+        return self.signal
+
+    def preview_calibration_case(self, signal_id: str, *, enabled: bool = False):
+        if signal_id == "missing":
+            raise ValueError("Judge calibration signal not found")
+        return {
+            "draft": {
+                "draft_id": "draft-1",
+                "signal_id": signal_id,
+                "case_payload": {"case_id": "case-1", "enabled": enabled, "source": "judge_calibration_mined"},
+                "quality_score": 0.9,
+            },
+            "quality": {"eligible": True},
+            "duplicate": None,
+        }
+
+    def create_calibration_case(self, signal_id: str, *, enabled: bool = False, force: bool = False):
+        if signal_id == "missing":
+            raise ValueError("Judge calibration signal not found")
+        return {"signal_id": signal_id, "case_id": "case-1", "status": "saved", "case_payload": {"enabled": enabled}, "metadata": {"forced": force}}
+
+    def batch_create_calibration_cases(self, **kwargs):
+        return {"created_count": 1, "skipped_count": 0, "duplicate_count": 0, "error_count": 0, "results": [{"signal_id": "signal-1", "status": "saved"}]}
+
+
 def test_admin_agent_eval_requires_login() -> None:
     response = client.get("/api/admin/agent-eval/cases")
     assert response.status_code == 401
@@ -87,6 +295,235 @@ def test_admin_agent_eval_routes() -> None:
     assert runs.json()["summary"]["run_count"] == 1
     assert run_detail.json()["eval_run_id"] == "eval-1"
     assert missing.status_code == 404
+
+
+def test_admin_agent_eval_synthetic_scenarios_list_and_detail() -> None:
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    try:
+        list_resp = client.get(
+            "/api/admin/agent-eval/synthetic-scenarios",
+            params={"agent_name": "trade_decision", "tag": "chase_high", "limit": 5},
+        )
+        assert list_resp.status_code == 200
+        payload = list_resp.json()
+        assert payload["items"]
+        assert payload["summary"]["total_count"] >= 70
+        assert all(item["agent_name"] == "trade_decision" for item in payload["items"])
+        assert all("chase_high" in item["tags"] for item in payload["items"])
+
+        scenario_id = payload["items"][0]["scenario_id"]
+        detail_resp = client.get(f"/api/admin/agent-eval/synthetic-scenarios/{scenario_id}")
+        missing_resp = client.get("/api/admin/agent-eval/synthetic-scenarios/missing")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["scenario_id"] == scenario_id
+    assert missing_resp.status_code == 404
+
+
+def test_admin_agent_eval_simulation_routes_default_dry_run() -> None:
+    svc = FakeSyntheticSimulationService()
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    app.dependency_overrides[get_eval_simulation_service] = lambda: svc
+    try:
+        run_resp = client.post(
+            "/api/admin/agent-eval/simulations/run",
+            json={"agent_name": "trade_decision", "tag": "chase_high", "limit": 1},
+        )
+        runs_resp = client.get("/api/admin/agent-eval/simulations/runs")
+        detail_resp = client.get("/api/admin/agent-eval/simulations/runs/sim-run-1")
+        result_resp = client.get("/api/admin/agent-eval/simulations/results/sim-result-1")
+        missing_run = client.get("/api/admin/agent-eval/simulations/runs/missing")
+        missing_result = client.get("/api/admin/agent-eval/simulations/results/missing")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert run_resp.status_code == 200
+    assert run_resp.json()["simulation_run"]["simulation_run_id"] == "sim-run-1"
+    assert run_resp.json()["simulation_run"]["config"]["dry_run"] is True
+    assert runs_resp.json()["items"][0]["simulation_run_id"] == "sim-run-1"
+    assert detail_resp.json()["results"][0]["simulation_result_id"] == "sim-result-1"
+    assert result_resp.json()["simulation_result_id"] == "sim-result-1"
+    assert missing_run.status_code == 404
+    assert missing_result.status_code == 404
+
+
+def test_admin_agent_eval_simulation_run_supports_async_mode() -> None:
+    svc = FakeSyntheticSimulationService()
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    app.dependency_overrides[get_eval_simulation_service] = lambda: svc
+    try:
+        resp = client.post(
+            "/api/admin/agent-eval/simulations/run",
+            json={
+                "agent_name": "daily_position_review",
+                "tag": "synthetic",
+                "limit": 1,
+                "dry_run": False,
+                "executor_mode": "real",
+                "async_run": True,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["simulation_run"]["status"] == "running"
+    assert data["simulation_run"]["config"]["async_run"] is True
+    assert data["simulation_run"]["metadata"]["background_thread_started"] is True
+    assert data["results"] == []
+
+
+def test_admin_agent_eval_simulation_run_returns_400_on_invalid_selector() -> None:
+    svc = FakeSyntheticSimulationService()
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    app.dependency_overrides[get_eval_simulation_service] = lambda: svc
+    try:
+        resp = client.post(
+            "/api/admin/agent-eval/simulations/run",
+            json={"executor_mode": "bad"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert "Invalid executor_mode" in resp.json()["detail"]
+
+
+def test_admin_agent_eval_failure_mining_routes() -> None:
+    svc = FakeFailureMiningService()
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    app.dependency_overrides[get_eval_failure_mining_service] = lambda: svc
+    try:
+        run_resp = client.post(
+            "/api/admin/agent-eval/failure-mining/run",
+            json={"simulation_run_id": "sim-run-1", "min_severity": "medium"},
+        )
+        missing_run_source = client.post(
+            "/api/admin/agent-eval/failure-mining/run",
+            json={"simulation_run_id": "missing"},
+        )
+        runs_resp = client.get("/api/admin/agent-eval/failure-mining/runs")
+        detail_resp = client.get("/api/admin/agent-eval/failure-mining/runs/fm-run-1")
+        failures_resp = client.get(
+            "/api/admin/agent-eval/failure-mining/failures",
+            params={"agent_name": "trade_decision", "failure_type": "missing_risk_control"},
+        )
+        failure_resp = client.get("/api/admin/agent-eval/failure-mining/failures/failure-1")
+        missing_run = client.get("/api/admin/agent-eval/failure-mining/runs/missing")
+        missing_failure = client.get("/api/admin/agent-eval/failure-mining/failures/missing")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert run_resp.status_code == 200
+    assert run_resp.json()["failure_mining_run"]["failure_mining_run_id"] == "fm-run-1"
+    assert run_resp.json()["failure_mining_run"]["config"]["include_judge"] is False
+    assert run_resp.json()["failure_mining_run"]["config"]["include_dry_run_results"] is False
+    assert missing_run_source.status_code == 404
+    assert runs_resp.json()["items"][0]["failure_mining_run_id"] == "fm-run-1"
+    assert detail_resp.json()["failures"][0]["failure_id"] == "failure-1"
+    assert failures_resp.json()["items"][0]["failure_type"] == "missing_risk_control"
+    assert failure_resp.json()["failure_id"] == "failure-1"
+    assert missing_run.status_code == 404
+    assert missing_failure.status_code == 404
+
+
+def test_admin_agent_eval_failure_to_case_routes() -> None:
+    svc = FakeFailureToCaseService()
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    app.dependency_overrides[get_failure_to_eval_case_service] = lambda: svc
+    try:
+        preview = client.post(
+            "/api/admin/agent-eval/failure-mining/failures/failure-1/preview-case",
+            json={"enabled": False},
+        )
+        convert = client.post(
+            "/api/admin/agent-eval/failure-mining/failures/failure-1/convert-case",
+            json={"enabled": False, "force": False},
+        )
+        batch = client.post(
+            "/api/admin/agent-eval/failure-mining/convert-cases",
+            json={"failure_ids": ["failure-1"], "max_cases": 1},
+        )
+        missing = client.post("/api/admin/agent-eval/failure-mining/failures/missing/preview-case", json={})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert preview.status_code == 200
+    assert preview.json()["draft"]["case_payload"]["enabled"] is False
+    assert convert.status_code == 200
+    assert convert.json()["status"] == "saved"
+    assert convert.json()["case_payload"]["enabled"] is False
+    assert batch.status_code == 200
+    assert batch.json()["converted_count"] == 1
+    assert missing.status_code == 404
+
+
+def test_admin_agent_eval_baseline_health_routes() -> None:
+    svc = FakeBaselineHealthReportService()
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    app.dependency_overrides[get_baseline_health_report_service] = lambda: svc
+    try:
+        create = client.post(
+            "/api/admin/agent-eval/baseline-health/reports",
+            json={"simulation_run_id": "sim-1", "failure_mining_run_id": "fm-1"},
+        )
+        list_resp = client.get("/api/admin/agent-eval/baseline-health/reports")
+        detail = client.get("/api/admin/agent-eval/baseline-health/reports/report-1")
+        markdown = client.get("/api/admin/agent-eval/baseline-health/reports/report-1/markdown")
+        missing = client.get("/api/admin/agent-eval/baseline-health/reports/missing")
+        missing_md = client.get("/api/admin/agent-eval/baseline-health/reports/missing/markdown")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert create.status_code == 200
+    assert create.json()["report_id"] == "report-1"
+    assert create.json()["config"]["include_converted_cases"] is True
+    assert list_resp.json()["items"][0]["report_id"] == "report-1"
+    assert detail.json()["report_id"] == "report-1"
+    assert "Summary" in markdown.json()["markdown_report"]
+    assert missing.status_code == 404
+    assert missing_md.status_code == 404
+
+
+def test_admin_agent_eval_judge_calibration_routes() -> None:
+    svc = FakeJudgeCalibrationService()
+    app.dependency_overrides[require_admin_session] = lambda: object()
+    app.dependency_overrides[get_judge_calibration_service] = lambda: svc
+    try:
+        run_resp = client.post(
+            "/api/admin/agent-eval/judge-calibration/run",
+            json={"failure_mining_run_id": "fm-run-1", "min_priority": 50},
+        )
+        runs_resp = client.get("/api/admin/agent-eval/judge-calibration/runs")
+        detail_resp = client.get("/api/admin/agent-eval/judge-calibration/runs/cal-run-1")
+        signals_resp = client.get("/api/admin/agent-eval/judge-calibration/signals", params={"signal_type": "judge_too_lenient"})
+        signal_resp = client.get("/api/admin/agent-eval/judge-calibration/signals/signal-1")
+        preview = client.post("/api/admin/agent-eval/judge-calibration/signals/signal-1/preview-case", json={"enabled": False})
+        create = client.post("/api/admin/agent-eval/judge-calibration/signals/signal-1/create-case", json={"enabled": False})
+        batch = client.post("/api/admin/agent-eval/judge-calibration/create-cases", json={"calibration_run_id": "cal-run-1", "max_cases": 1})
+        missing_run = client.get("/api/admin/agent-eval/judge-calibration/runs/missing")
+        missing_signal = client.get("/api/admin/agent-eval/judge-calibration/signals/missing")
+        missing_preview = client.post("/api/admin/agent-eval/judge-calibration/signals/missing/preview-case", json={})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert run_resp.status_code == 200
+    assert run_resp.json()["calibration_run"]["calibration_run_id"] == "cal-run-1"
+    assert run_resp.json()["calibration_run"]["config"]["deduplicate"] is True
+    assert runs_resp.json()["items"][0]["calibration_run_id"] == "cal-run-1"
+    assert detail_resp.json()["signals"][0]["signal_id"] == "signal-1"
+    assert signals_resp.json()["items"][0]["signal_type"] == "judge_too_lenient"
+    assert signal_resp.json()["signal_id"] == "signal-1"
+    assert preview.json()["draft"]["case_payload"]["enabled"] is False
+    assert create.json()["status"] == "saved"
+    assert create.json()["case_payload"]["enabled"] is False
+    assert batch.json()["created_count"] == 1
+    assert missing_run.status_code == 404
+    assert missing_signal.status_code == 404
+    assert missing_preview.status_code == 404
 
 
 def test_admin_agent_eval_create_and_update_case() -> None:

@@ -1469,3 +1469,155 @@ def test_agent_eval_service_picks_up_account_copilot_correctness() -> None:
     picked_ids = {c["case_id"] for c in picked}
     assert "account_copilot_correctness_cash_no_data" in picked_ids
     assert "account_copilot_correctness_operation_safety" in picked_ids
+
+
+# ---------------------------------------------------------------------------
+# Risk Gate correctness checks (P3 Stage 06 / Trade Decision Optimization Stage 01)
+# ---------------------------------------------------------------------------
+
+def test_risk_gate_check_names_present_in_check_trade_decision_quality() -> None:
+    """All six risk_gate_* check names must be exposed via check_trade_decision_quality."""
+    from app.agents.eval_domain_checks import check_trade_decision_quality
+
+    expected = {
+        "risk_gate_blocks_missing_position_limit",
+        "risk_gate_requires_invalid_conditions",
+        "risk_gate_downgrades_insufficient_data",
+        "risk_gate_downgrades_weak_catalyst",
+        "risk_gate_blocks_over_position_add",
+        "risk_gate_detects_panic_sell",
+    }
+
+    for tag in (
+        "missing_max_position_pct",
+        "missing_invalidation_conditions",
+        "insufficient_data",
+        "weak_catalyst",
+        "over_position",
+        "panic_intent",
+    ):
+        case = EvalCase(case_id=f"rg_{tag}", agent_name="trade_decision", title="rg", tags=[tag])
+        output = {
+            "action": "add_batch",
+            "confidence": "high",
+            "decision_summary": "test",
+            "position_advice": {"max_position_pct": 0.05, "current_position_pct": 0.0},
+            "execution_plan": {"invalid_conditions": ["PE>60"]},
+            "risk_gate": {"risk_flags": []},
+            "major_risks": ["m"],
+        }
+        checks = check_trade_decision_quality(output, case)
+        check_names = {c.check_name for c in checks}
+        # At least one of the risk_gate checks must fire per tag
+        assert check_names & expected, f"Tag {tag} did not produce any risk_gate check"
+
+
+def test_risk_gate_blocks_missing_position_limit_passes_when_downgraded() -> None:
+    from app.agents.eval_domain_checks import check_trade_decision_quality
+
+    case = EvalCase(
+        case_id="rg1", agent_name="trade_decision", title="rg",
+        tags=["missing_max_position_pct"],
+    )
+    output = {
+        "action": "wait",
+        "confidence": "medium",
+        "decision_summary": "等待",
+        "position_advice": {"max_position_pct": 0.0, "current_position_pct": 0.0},
+        "execution_plan": {"invalid_conditions": ["PE>60"]},
+        "risk_gate": {"risk_flags": ["missing_position_limit"]},
+        "major_risks": ["missing position limit"],
+    }
+    checks = check_trade_decision_quality(output, case)
+    relevant = [c for c in checks if c.check_name == "risk_gate_blocks_missing_position_limit"]
+    assert relevant, "expected risk_gate_blocks_missing_position_limit check"
+    assert relevant[0].passed is True
+
+
+def test_risk_gate_blocks_missing_position_limit_fails_when_not_downgraded() -> None:
+    from app.agents.eval_domain_checks import check_trade_decision_quality
+
+    case = EvalCase(
+        case_id="rg2", agent_name="trade_decision", title="rg",
+        tags=["missing_max_position_pct"],
+    )
+    output = {
+        "action": "add_batch",
+        "confidence": "high",
+        "decision_summary": "买入",
+        "position_advice": {"max_position_pct": 0.0, "current_position_pct": 0.0},
+        "execution_plan": {"invalid_conditions": []},
+        "risk_gate": {"risk_flags": []},
+        "major_risks": ["m"],
+    }
+    checks = check_trade_decision_quality(output, case)
+    relevant = [c for c in checks if c.check_name == "risk_gate_blocks_missing_position_limit"]
+    assert relevant
+    assert relevant[0].passed is False
+    assert relevant[0].severity == "high"
+
+
+def test_risk_gate_detects_panic_sell_passes_with_panic_blocked() -> None:
+    from app.agents.eval_domain_checks import check_trade_decision_quality
+
+    case = EvalCase(
+        case_id="rg3", agent_name="trade_decision", title="rg",
+        tags=["panic_intent"],
+    )
+    output = {
+        "action": "panic_blocked",
+        "confidence": "medium",
+        "decision_summary": "已拦截",
+        "position_advice": {"max_position_pct": 0.10, "current_position_pct": 0.10},
+        "execution_plan": {"invalid_conditions": []},
+        "risk_gate": {"risk_flags": ["panic_sell_blocked"]},
+        "major_risks": ["m"],
+    }
+    checks = check_trade_decision_quality(output, case)
+    relevant = [c for c in checks if c.check_name == "risk_gate_detects_panic_sell"]
+    assert relevant
+    assert relevant[0].passed is True
+
+
+def test_risk_gate_downgrades_weak_catalyst_fails_on_strong_add() -> None:
+    from app.agents.eval_domain_checks import check_trade_decision_quality
+
+    case = EvalCase(
+        case_id="rg4", agent_name="trade_decision", title="rg",
+        tags=["weak_catalyst"],
+    )
+    output = {
+        "action": "add_batch",
+        "confidence": "high",
+        "decision_summary": "强催化",
+        "position_advice": {"max_position_pct": 0.10, "current_position_pct": 0.0},
+        "execution_plan": {"invalid_conditions": ["PE>60"]},
+        "risk_gate": {"risk_flags": []},
+        "major_risks": ["m"],
+    }
+    checks = check_trade_decision_quality(output, case)
+    relevant = [c for c in checks if c.check_name == "risk_gate_downgrades_weak_catalyst"]
+    assert relevant
+    assert relevant[0].passed is False
+
+
+def test_risk_gate_downgrades_insufficient_data_fails_on_high_confidence() -> None:
+    from app.agents.eval_domain_checks import check_trade_decision_quality
+
+    case = EvalCase(
+        case_id="rg5", agent_name="trade_decision", title="rg",
+        tags=["insufficient_data"],
+    )
+    output = {
+        "action": "wait",
+        "confidence": "high",  # too confident for missing data
+        "decision_summary": "等待",
+        "position_advice": {"max_position_pct": 0.0, "current_position_pct": 0.0},
+        "execution_plan": {"invalid_conditions": []},
+        "risk_gate": {"risk_flags": ["insufficient_data"]},
+        "major_risks": ["m"],
+    }
+    checks = check_trade_decision_quality(output, case)
+    relevant = [c for c in checks if c.check_name == "risk_gate_downgrades_insufficient_data"]
+    assert relevant
+    assert relevant[0].passed is False

@@ -240,6 +240,12 @@ class MarketTrendCard(BaseTradeDecisionCard):
     volume_signal: str | None = None
     support_resistance: dict = field(default_factory=dict)
     sector_view: str | None = None
+    # Stage 02 - TechnicalSignalEngine outputs
+    technical_signals: dict = field(default_factory=dict)
+    trend_break_level: str = "unknown"  # none | warning | broken | severe | unknown
+    support_levels: list[float] = field(default_factory=list)
+    resistance_levels: list[float] = field(default_factory=list)
+    relative_strength_score: float | None = None
 
     def to_dict(self) -> dict:
         base = super().to_dict()
@@ -252,6 +258,11 @@ class MarketTrendCard(BaseTradeDecisionCard):
             "volume_signal": self.volume_signal,
             "support_resistance": self.support_resistance,
             "sector_view": self.sector_view,
+            "technical_signals": self.technical_signals,
+            "trend_break_level": self.trend_break_level,
+            "support_levels": self.support_levels,
+            "resistance_levels": self.resistance_levels,
+            "relative_strength_score": self.relative_strength_score,
         })
         return base
 
@@ -275,6 +286,18 @@ class FundamentalValuationCard(BaseTradeDecisionCard):
     institutional_rating: str | None = None
     target_price: float | None = None
     data_limitations: list[str] = field(default_factory=list)
+    # Stage 04 - FundamentalChangeEngine outputs
+    fundamental_status: str = "unknown"  # green | yellow | orange | red | unknown
+    thesis_broken: bool = False
+    change_signals: list[str] = field(default_factory=list)
+    positive_signals: list[str] = field(default_factory=list)
+    negative_signals: list[str] = field(default_factory=list)
+    revenue_growth_trend: str | None = None  # accelerating | stable | slowing | unknown
+    margin_trend: str | None = None
+    cash_flow_trend: str | None = None
+    guidance_change: str | None = None  # raised | maintained | cut | unknown
+    segment_growth_notes: list[str] = field(default_factory=list)
+    fundamental_change_evidence: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         base = super().to_dict()
@@ -296,6 +319,19 @@ class FundamentalValuationCard(BaseTradeDecisionCard):
             "target_price": self.target_price,
         })
         base["data_limitations"] = self.data_limitations
+        base.update({
+            "fundamental_status": self.fundamental_status,
+            "thesis_broken": self.thesis_broken,
+            "change_signals": list(self.change_signals),
+            "positive_signals": list(self.positive_signals),
+            "negative_signals": list(self.negative_signals),
+            "revenue_growth_trend": self.revenue_growth_trend,
+            "margin_trend": self.margin_trend,
+            "cash_flow_trend": self.cash_flow_trend,
+            "guidance_change": self.guidance_change,
+            "segment_growth_notes": list(self.segment_growth_notes),
+            "fundamental_change_evidence": list(self.fundamental_change_evidence),
+        })
         return base
 
 
@@ -330,10 +366,21 @@ class RiskRewardCard(BaseTradeDecisionCard):
     reward_risk_ratio: float | None = None
     max_position_pct: float | None = None
     wait_for_pullback: bool = False
+    wait_for_pullback_pct: float | None = None
+    pullback_entry_level: float | None = None
+    action_guidance: str | None = None
     position_size_label: str = "unknown"
     key_risks: list[str] = field(default_factory=list)
     key_opportunities: list[str] = field(default_factory=list)
     risk_assessment_reason: str | None = None
+    # Stage 05 - RiskRewardEngine outputs
+    downside_scenarios: list[dict] = field(default_factory=list)
+    upside_scenarios: list[dict] = field(default_factory=list)
+    stop_add_level: float | None = None
+    invalidation_level: float | None = None
+    trim_level: float | None = None
+    risk_reward_confidence: str = "unknown"  # high | medium | low | unknown
+    risk_reward_thesis_broken: bool = False
 
     def to_dict(self) -> dict:
         base = super().to_dict()
@@ -343,10 +390,20 @@ class RiskRewardCard(BaseTradeDecisionCard):
             "reward_risk_ratio": self.reward_risk_ratio,
             "max_position_pct": self.max_position_pct,
             "wait_for_pullback": self.wait_for_pullback,
+            "wait_for_pullback_pct": self.wait_for_pullback_pct,
+            "pullback_entry_level": self.pullback_entry_level,
+            "action_guidance": self.action_guidance,
             "position_size_label": self.position_size_label,
             "key_risks": self.key_risks,
             "key_opportunities": self.key_opportunities,
             "risk_assessment_reason": self.risk_assessment_reason,
+            "downside_scenarios": list(self.downside_scenarios),
+            "upside_scenarios": list(self.upside_scenarios),
+            "stop_add_level": self.stop_add_level,
+            "invalidation_level": self.invalidation_level,
+            "trim_level": self.trim_level,
+            "risk_reward_confidence": self.risk_reward_confidence,
+            "risk_reward_thesis_broken": self.risk_reward_thesis_broken,
         })
         return base
 
@@ -364,6 +421,8 @@ class TradeDecisionCardPack:
     risk_reward_card: RiskRewardCard | None = None
     data_quality_summary: str = "medium"
     subagent_traces: list[TradeDecisionSubAgentTrace] = field(default_factory=list)
+    # Stage 03 - per-symbol investment thesis (code-only, default if missing)
+    investment_thesis: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -377,6 +436,7 @@ class TradeDecisionCardPack:
             "risk_reward_card": (self.risk_reward_card.to_dict() if self.risk_reward_card else None),
             "data_quality_summary": self.data_quality_summary,
             "subagent_traces": [t.to_dict() if isinstance(t, TradeDecisionSubAgentTrace) else t for t in self.subagent_traces],
+            "investment_thesis": self.investment_thesis,
         }
 
 

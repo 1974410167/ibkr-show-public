@@ -60,6 +60,16 @@ class Settings:
     es_copilot_llm_call_metrics_index: str
     es_structured_output_metrics_index: str
     es_llm_call_metrics_index: str
+    es_market_event_source_index: str
+    es_market_event_definition_index: str
+    es_market_event_occurrence_index: str
+    es_market_event_value_index: str
+    es_market_event_impact_index: str
+    es_market_event_news_link_index: str
+    es_market_event_analysis_index: str
+    es_market_event_sync_run_index: str
+    market_event_credential_file: str
+    config_encryption_key: str
     account_copilot_run_timeout_seconds: int
     account_copilot_max_react_rounds: int
     account_copilot_max_event_payload_chars: int
@@ -135,6 +145,19 @@ def get_settings() -> Settings:
         es_copilot_llm_call_metrics_index=os.getenv("ES_COPILOT_LLM_CALL_METRICS_INDEX", "ibkr_copilot_llm_call_metrics_v1"),
         es_structured_output_metrics_index=os.getenv("ES_STRUCTURED_OUTPUT_METRICS_INDEX", "ibkr_structured_output_metrics_v1"),
         es_llm_call_metrics_index=os.getenv("ES_LLM_CALL_METRICS_INDEX", "ibkr_llm_call_metrics"),
+        es_market_event_source_index=os.getenv("ES_MARKET_EVENT_SOURCE_INDEX", "market_event_sources_v1"),
+        es_market_event_definition_index=os.getenv("ES_MARKET_EVENT_DEFINITION_INDEX", "market_event_definitions_v1"),
+        es_market_event_occurrence_index=os.getenv("ES_MARKET_EVENT_OCCURRENCE_INDEX", "market_event_occurrences_v1"),
+        es_market_event_value_index=os.getenv("ES_MARKET_EVENT_VALUE_INDEX", "market_event_values_v1"),
+        es_market_event_impact_index=os.getenv("ES_MARKET_EVENT_IMPACT_INDEX", "market_event_impacts_v1"),
+        es_market_event_news_link_index=os.getenv("ES_MARKET_EVENT_NEWS_LINK_INDEX", "market_event_news_links_v1"),
+        es_market_event_analysis_index=os.getenv("ES_MARKET_EVENT_ANALYSIS_INDEX", "market_event_analysis_v1"),
+        es_market_event_sync_run_index=os.getenv("ES_MARKET_EVENT_SYNC_RUN_INDEX", "market_event_sync_runs_v1"),
+        market_event_credential_file=os.getenv(
+            "MARKET_EVENT_CREDENTIAL_FILE",
+            str(BASE_DIR / "data" / "config" / "market_event_credentials.json"),
+        ),
+        config_encryption_key=os.getenv("CONFIG_ENCRYPTION_KEY") or os.getenv("APP_SECRET_KEY") or "",
         account_copilot_run_timeout_seconds=int(os.getenv("ACCOUNT_COPILOT_RUN_TIMEOUT_SECONDS", "180")),
         account_copilot_max_react_rounds=int(os.getenv("ACCOUNT_COPILOT_MAX_REACT_ROUNDS", "8")),
         account_copilot_max_event_payload_chars=int(os.getenv("ACCOUNT_COPILOT_MAX_EVENT_PAYLOAD_CHARS", "6000")),

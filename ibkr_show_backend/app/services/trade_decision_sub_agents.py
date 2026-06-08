@@ -549,6 +549,57 @@ def _missing_fields_from_trace(trace: list[dict], *, tool_names: set[str] | None
     return missing
 
 
+def _extract_financial_reports_from_trace(trace: list[dict]) -> list[dict]:
+    """Recover a list of quarterly financial reports from the trace.
+
+    The MCP adapter compacts financial_report output to a single summary
+    dict, so we look at both the raw `tool_call.parsed_fields` (if any)
+    and the compacted `data` payload. The goal is to give the
+    FundamentalChangeEngine as much structured series as possible without
+    fabricating data.
+    """
+    reports: list[dict] = []
+    for event in trace or []:
+        if event.get("event") != "tool_finish" or event.get("tool") != "financial_report" or event.get("ok") is not True:
+            continue
+        output = event.get("output") or {}
+        if not isinstance(output, dict):
+            continue
+        record = output.get("tool_call") or {}
+        if not isinstance(record, dict):
+            record = {}
+        data = output.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        # 1) raw quarterly series in `tool_call.parsed_fields` or `data.items`
+        for src in (record.get("parsed_fields") or [], data.get("items") or []):
+            if isinstance(src, list):
+                for item in src:
+                    if isinstance(item, dict):
+                        reports.append(item)
+        # 2) compact summary: try to lift known fields into one report
+        if data and not reports:
+            synthetic: dict = {}
+            for k in (
+                "revenue", "total_revenue", "sales", "net_revenue",
+                "gross_margin", "gross_margin_pct", "gross_margin_percent",
+                "operating_margin", "op_margin", "operating_margin_pct",
+                "operating_cash_flow", "cfo", "ocf", "cash_from_operations",
+                "free_cash_flow", "fcf",
+            ):
+                if k in data and data[k] is not None:
+                    synthetic[k] = data[k]
+            if synthetic:
+                reports.append(synthetic)
+        # 3) last resort: if data has top-level numeric fields, capture them
+        if not reports and data:
+            for k, v in data.items():
+                if isinstance(v, (int, float)) and k not in {"sample_points"}:
+                    reports.append({k: v})
+                    break
+    return reports
+
+
 def _format_tool_issue(record: dict, field_name: str | None) -> str:
     payload = {
         "tool_name": record.get("tool_name"),
@@ -1028,6 +1079,60 @@ class MarketTrendSubAgent(MCPSubAgent):
         limitations = _extract_data_limitations_from_runtime(parsed, trace)
         tool_calls = _tool_call_records_from_trace(trace)
 
+        # Stage 02 - run TechnicalSignalEngine on raw candlesticks from the
+        # trace and populate the card's technical signals. The LLM trend text
+        # is used only as a label; the engine's numeric outputs are the
+        # authoritative inputs to the Risk Gate.
+        try:
+            from app.services.technical_signal_engine import (
+                TechnicalSignalEngine,
+                extract_benchmark_candles_from_trace,
+                extract_raw_candles_from_trace,
+            )
+
+            engine = TechnicalSignalEngine()
+            symbol_candles = extract_raw_candles_from_trace(
+                trace, "candlesticks", symbol=snapshot.symbol,
+            )
+            benchmark_candles = extract_benchmark_candles_from_trace(
+                trace, ["QQQ.US", "SPY.US", "SMH.US"],
+            )
+            quote_data = _tool_data_from_trace(trace, "quote")
+            quote = dict(quote_data) if isinstance(quote_data, dict) else {}
+            technical_signals = engine.compute(
+                symbol_candles=symbol_candles,
+                benchmark_candles=benchmark_candles,
+                quote=quote,
+            )
+            technical_signals_dict = technical_signals.to_dict()
+            # Surface data_limitations on the card so the eval / Risk Gate
+            # can see them.
+            if technical_signals.data_limitations:
+                limitations = list(dict.fromkeys(limitations + technical_signals.data_limitations))[:20]
+            # evidence_quality must NOT be elevated when the engine could
+            # not compute any signals.
+            successful = bool(_successful_source_tools(trace))
+            if not symbol_candles:
+                technical_quality_downgrade = True
+            else:
+                technical_quality_downgrade = False
+        except Exception as engine_exc:
+            technical_signals_dict = {
+                "data_limitations": [f"technical_signal_engine_failed: {str(engine_exc)[:120]}"],
+                "trend_break_level": "unknown",
+                "trend_break_reasons": [],
+            }
+            technical_quality_downgrade = True
+            successful = bool(_successful_source_tools(trace))
+            limitations = list(dict.fromkeys(limitations + technical_signals_dict["data_limitations"]))[:20]
+
+        if successful and not technical_quality_downgrade:
+            base_quality = "medium"
+            if score >= 10:
+                base_quality = "high"
+        else:
+            base_quality = "low"
+
         return MarketTrendCard(
             card_type="market_trend",
             symbol=snapshot.symbol,
@@ -1042,11 +1147,16 @@ class MarketTrendSubAgent(MCPSubAgent):
             recent_return_pct=float(parsed.get("recent_return_pct", 0) or 0),
             volatility_summary=str(parsed.get("volatility_summary", "medium")),
             data_limitations=limitations,
-            evidence_quality="low" if limitations and not _successful_source_tools(trace) else "medium",
+            evidence_quality=base_quality,
             source_tools=_successful_source_tools(trace),
             tool_calls=tool_calls,
             data_quality=_data_quality_from_trace(trace),
             missing_fields=_missing_fields_from_trace(trace, tool_names={"quote", "candlesticks", "history_candlesticks"}),
+            technical_signals=technical_signals_dict,
+            trend_break_level=str(technical_signals_dict.get("trend_break_level") or "unknown"),
+            support_levels=list(technical_signals_dict.get("support_levels") or []),
+            resistance_levels=list(technical_signals_dict.get("resistance_levels") or []),
+            relative_strength_score=technical_signals_dict.get("relative_strength_score"),
             created_at=datetime_now(),
         )
 
@@ -1127,6 +1237,7 @@ class FundamentalValuationSubAgent(MCPSubAgent):
         consensus_data = _tool_data_from_trace(trace, "consensus")
         estimates_data = _tool_data_from_trace(trace, "forecast_eps")
         segments_data = _tool_data_from_trace(trace, "business_segments")
+        financial_data = _tool_data_from_trace(trace, "financial_report")
         current_price = (
             _optional_positive_float(snapshot.current_price)
             or _optional_positive_float(quote_data.get("price"))
@@ -1216,6 +1327,74 @@ class FundamentalValuationSubAgent(MCPSubAgent):
         limitations = list(dict.fromkeys(limitations))[:20]
         tool_calls = _tool_call_records_from_trace(trace)
 
+        # Stage 04 - run FundamentalChangeEngine on the structured inputs
+        # the sub-agent has already collected. The LLM-derived stance / score
+        # remain the high-level signal; the engine provides the structured
+        # change_signals / thesis_broken / fundamental_status that the Risk
+        # Gate and the composer will use.
+        try:
+            from app.services.fundamental_change_engine import FundamentalChangeEngine
+            from app.services.investment_thesis import get_thesis
+
+            engine = FundamentalChangeEngine()
+            thesis = None
+            try:
+                thesis = get_thesis(snapshot.symbol)
+            except Exception:
+                thesis = None
+            change_result = engine.evaluate(
+                financial_reports=_extract_financial_reports_from_trace(trace),
+                valuation=dict(valuation_data) if isinstance(valuation_data, dict) else None,
+                business_segments=business_segments,
+                institution_rating=dict(rating_data) if isinstance(rating_data, dict) else None,
+                forecast_eps=dict(estimates_data) if isinstance(estimates_data, dict) else None,
+                investment_thesis=thesis,
+            )
+            fundamental_status = change_result.fundamental_status
+            thesis_broken = change_result.thesis_broken
+            change_signals = list(change_result.change_signals)
+            positive_signals = list(change_result.positive_signals)
+            negative_signals = list(change_result.negative_signals)
+            revenue_growth_trend = change_result.revenue_growth_trend
+            margin_trend = change_result.margin_trend
+            cash_flow_trend = change_result.cash_flow_trend
+            guidance_change = change_result.guidance_change
+            segment_growth_notes = list(change_result.segment_growth_notes)
+            fundamental_change_evidence = list(change_result.evidence)
+            if change_result.data_limitations:
+                # Don't pollute the user-facing list with engine internals;
+                # only surface ones that indicate we have no structured
+                # financial_report series.
+                structural = [
+                    dl for dl in change_result.data_limitations
+                    if any(
+                        token in dl
+                        for token in ("revenue", "margin", "现金流", "guidance")
+                    )
+                ]
+                if structural:
+                    limitations = list(dict.fromkeys(
+                        limitations + [f"fundamental_change_engine: {s}" for s in structural]
+                    ))[:20]
+        except Exception as engine_exc:
+            # Engine failure must NOT silently leave the card in default
+            # state; we mark the status unknown and surface the failure so
+            # the Risk Gate can apply a conservative confidence cap.
+            fundamental_status = "unknown"
+            thesis_broken = False
+            change_signals = []
+            positive_signals = []
+            negative_signals = []
+            revenue_growth_trend = None
+            margin_trend = None
+            cash_flow_trend = None
+            guidance_change = None
+            segment_growth_notes = []
+            fundamental_change_evidence = []
+            limitations = list(dict.fromkeys(
+                limitations + [f"fundamental_change_engine_failed: {str(engine_exc)[:120]}"]
+            ))[:20]
+
         return FundamentalValuationCard(
             card_type="fundamental_valuation",
             symbol=snapshot.symbol,
@@ -1244,6 +1423,17 @@ class FundamentalValuationSubAgent(MCPSubAgent):
             tool_calls=tool_calls,
             data_quality=_data_quality_from_trace(trace),
             missing_fields=_missing_fields_from_trace(trace, tool_names={"quote", "company", "static_info", "financial_report", "valuation", "business_segments", "industry_peers", "institution_rating", "consensus", "forecast_eps"}),
+            fundamental_status=fundamental_status,
+            thesis_broken=thesis_broken,
+            change_signals=change_signals,
+            positive_signals=positive_signals,
+            negative_signals=negative_signals,
+            revenue_growth_trend=revenue_growth_trend,
+            margin_trend=margin_trend,
+            cash_flow_trend=cash_flow_trend,
+            guidance_change=guidance_change,
+            segment_growth_notes=segment_growth_notes,
+            fundamental_change_evidence=fundamental_change_evidence,
             created_at=datetime_now(),
         )
 
@@ -1577,11 +1767,60 @@ class RiskRewardSubAgent:
 
             if so_result.ok and so_result.payload is not None:
                 llm_output = so_result.payload
-                base_card.summary = llm_output.get("summary", base_card.summary)
-                base_card.key_risks = llm_output.get("key_risks", base_card.key_risks)
-                base_card.key_opportunities = llm_output.get("key_opportunities", base_card.key_opportunities)
-                base_card.data_limitations = llm_output.get("data_limitations", base_card.data_limitations)
-                base_card.risk_assessment_reason = llm_output.get("risk_assessment_reason") or base_card.risk_assessment_reason
+                # summary is a free-form text field; the LLM is the
+                # primary source. Keep the engine's value only when the
+                # LLM did not produce one.
+                if llm_output.get("summary"):
+                    base_card.summary = llm_output["summary"]
+
+                # key_risks / key_opportunities: MERGE the rule-engine
+                # list with the LLM list. The engine's structural read
+                # (MA200 distance, support, ATR, fundamental drawdown,
+                # target_price) must NOT be overwritten by the LLM; the
+                # LLM is allowed to APPEND additional entries. We
+                # de-duplicate and cap at a reasonable length.
+                engine_risks = list(base_card.key_risks or [])
+                llm_risks = llm_output.get("key_risks") or []
+                if isinstance(llm_risks, list):
+                    merged_risks = list(dict.fromkeys(engine_risks + [str(r) for r in llm_risks]))
+                    base_card.key_risks = [r for r in merged_risks if r][:10]
+
+                engine_opps = list(base_card.key_opportunities or [])
+                llm_opps = llm_output.get("key_opportunities") or []
+                if isinstance(llm_opps, list):
+                    merged_opps = list(dict.fromkeys(engine_opps + [str(o) for o in llm_opps]))
+                    base_card.key_opportunities = [o for o in merged_opps if o][:10]
+
+                # data_limitations: MERGE. The engine surfaces
+                # structural limitations (missing MA200 / support / ATR
+                # / fundamental); the LLM can append but never replace.
+                engine_limits = list(base_card.data_limitations or [])
+                llm_limits = llm_output.get("data_limitations") or []
+                if isinstance(llm_limits, list):
+                    merged_limits = list(dict.fromkeys(
+                        engine_limits + [str(d) for d in llm_limits if d]
+                    ))
+                    base_card.data_limitations = [d for d in merged_limits if d][:20]
+
+                # risk_assessment_reason: append the LLM text to the
+                # engine's action_guidance tag, never replace it. The
+                # engine tag is the authoritative seed; the LLM can
+                # elaborate.
+                engine_reason = base_card.risk_assessment_reason or ""
+                llm_reason = llm_output.get("risk_assessment_reason")
+                if llm_reason:
+                    if engine_reason and "RiskRewardEngine" in engine_reason:
+                        # Keep the engine seed first so the trace always
+                        # carries the deterministic anchor.
+                        base_card.risk_assessment_reason = (
+                            f"{engine_reason} | LLM: {llm_reason}"
+                        )
+                    elif engine_reason:
+                        base_card.risk_assessment_reason = (
+                            f"LLM: {llm_reason} | {engine_reason}"
+                        )
+                    else:
+                        base_card.risk_assessment_reason = str(llm_reason)
             else:
                 trace.fallback_used = True
                 trace.fallback_reason = f"risk_reward_llm_enhancement_failed: {so_result.error_code or 'unknown'}"
@@ -1630,47 +1869,139 @@ class RiskRewardSubAgent:
         fundamental: FundamentalValuationCard | None,
         event: EventCatalystCard | None,
     ) -> RiskRewardCard:
-        current_price = snapshot.current_price
-        avg_cost = snapshot.avg_cost
-        is_holding = snapshot.is_holding
+        # Stage 05 - use RiskRewardEngine. The old cost-basis / +30% algorithm
+        # is intentionally NOT used here: it systematically underestimated
+        # downside (avg_cost * 0.85) and over-promised upside (price * 1.3).
+        technical_signals: dict | None = None
+        if market_trend is not None and getattr(market_trend, "technical_signals", None):
+            technical_signals = market_trend.technical_signals
 
-        trend_return = market_trend.recent_return_pct if market_trend and market_trend.recent_return_pct else 0
+        try:
+            from app.services.investment_thesis import get_thesis
+            from app.services.risk_reward_engine import RiskRewardEngine
 
-        if is_holding and avg_cost and avg_cost > 0 and current_price:
-            upside = ((current_price * 1.3) - current_price) / current_price * 100
-            downside = (current_price - (avg_cost * 0.85)) / current_price * 100
-        elif fundamental and fundamental.market_cap:
-            mc = fundamental.market_cap
-            upside = 40 if mc < 10e9 else 25 if mc < 100e9 else 15
-            downside = 20 if mc < 10e9 else 15
+            thesis = None
+            try:
+                thesis = get_thesis(snapshot.symbol)
+            except Exception:
+                thesis = None
+
+            engine = RiskRewardEngine()
+            estimate = engine.estimate(
+                snapshot=snapshot,
+                account_fit=account_fit,
+                market_trend=market_trend,
+                fundamental=fundamental,
+                event=event,
+                investment_thesis=thesis,
+                technical_signals=technical_signals,
+                last_close=snapshot.current_price,
+            )
+        except Exception:
+            # Engine failure is non-fatal; fall back to a conservative empty
+            # estimate so the LLM enhancement layer can still run.
+            from app.services.risk_reward_engine import RiskRewardEstimate
+
+            estimate = RiskRewardEstimate(
+                upside_potential_pct=None,
+                downside_risk_pct=None,
+                reward_risk_ratio=None,
+                max_position_pct=0.05,
+                position_size_label="unknown",
+                confidence="low",
+                wait_for_pullback=True,
+                data_limitations=["RiskRewardEngine unavailable, results not reliable"],
+                action_guidance="wait",
+            )
+
+        ratio = estimate.reward_risk_ratio
+        if ratio is None:
+            score = 4
+            stance = CardStance.INSUFFICIENT_DATA
+        elif ratio >= 2.0:
+            score = 14
+            stance = CardStance.BULLISH
+        elif ratio >= 1.5:
+            score = 12
+            stance = CardStance.BULLISH
+        elif ratio >= 1.0:
+            score = 8
+            stance = CardStance.NEUTRAL
         else:
-            upside = trend_return * 1.5 if trend_return > 0 else 10
-            downside = abs(trend_return) * 1.2 if trend_return < 0 else 15
+            score = 4
+            stance = CardStance.BEARISH
 
-        rr_ratio = upside / downside if downside > 0 else 1.0
-        wait_for_pullback = downside > 25 or rr_ratio < 1.0
-        max_pos_pct = account_fit.max_suggested_position_pct if account_fit else 0.05
-        score = 12 if rr_ratio >= 2.0 else 8 if rr_ratio >= 1.0 else 4
-        stance = CardStance.BULLISH if rr_ratio >= 2.0 else CardStance.NEUTRAL if rr_ratio >= 1.0 else CardStance.BEARISH
+        # Build a structured summary for the LLM enhancement layer.
+        upside_disp = "n/a" if estimate.upside_potential_pct is None else f"{estimate.upside_potential_pct:.1f}%"
+        downside_disp = "n/a" if estimate.downside_risk_pct is None else f"{estimate.downside_risk_pct:.1f}%"
+        ratio_disp = "n/a" if ratio is None else f"{ratio:.2f}"
+        summary = (
+            f"上行 {upside_disp}，下行 {downside_disp}，风险收益比 {ratio_disp}x"
+            f"（RiskRewardEngine 确定性估算，不依赖成本价）"
+        )
+
+        # The key_risks / key_opportunities are still LLM-enhanced later
+        # but seed them with the engine's structural read so the card is
+        # never empty.
+        key_risks: list[str] = []
+        if estimate.downside_scenarios:
+            for s in estimate.downside_scenarios[:3]:
+                scen = str(s.get("scenario") or "")
+                dist = s.get("distance_pct")
+                if dist is not None:
+                    key_risks.append(f"{scen} 距离 {dist:.1f}%")
+        if not key_risks and estimate.downside_risk_pct is not None:
+            key_risks.append(f"下行风险 {estimate.downside_risk_pct:.1f}%")
+        if not key_risks:
+            key_risks.append("下行风险数据不足")
+
+        key_opportunities: list[str] = []
+        if estimate.upside_scenarios:
+            for s in estimate.upside_scenarios[:3]:
+                scen = str(s.get("scenario") or "")
+                dist = s.get("distance_pct")
+                if dist is not None:
+                    key_opportunities.append(f"{scen} 距离 {dist:.1f}%")
+        if not key_opportunities and estimate.upside_potential_pct is not None:
+            key_opportunities.append(f"上行空间 {estimate.upside_potential_pct:.1f}%")
+        if not key_opportunities:
+            key_opportunities.append("上行空间数据不足")
+
+        # Position size label from the engine (already capped by risk_class)
+        position_size_label = estimate.position_size_label
+        if position_size_label == "unknown" and account_fit is not None:
+            position_size_label = account_fit.position_size_label
 
         return RiskRewardCard(
             card_type="risk_reward",
             symbol=snapshot.symbol,
             decision_type=snapshot.decision_type,
-            summary=f"上行空间 ~{upside:.0f}%，下行风险 ~{downside:.0f}%，风险收益比 {rr_ratio:.1f}x",
+            summary=summary,
             score=score,
             max_score=15,
             stance=stance,
-            upside_potential_pct=round(upside, 1),
-            downside_risk_pct=round(downside, 1),
-            reward_risk_ratio=round(rr_ratio, 2),
-            max_position_pct=max_pos_pct,
-            wait_for_pullback=wait_for_pullback,
-            position_size_label=account_fit.position_size_label if account_fit else "unknown",
-            key_risks=[f"下行风险 {downside:.0f}%" if downside > 15 else "下行风险可控"],
-            key_opportunities=[f"上行空间 {upside:.0f}%" if upside > 20 else "上行空间有限"],
-            evidence_quality="medium",
+            upside_potential_pct=estimate.upside_potential_pct,
+            downside_risk_pct=estimate.downside_risk_pct,
+            reward_risk_ratio=estimate.reward_risk_ratio,
+            max_position_pct=estimate.max_position_pct,
+            wait_for_pullback=estimate.wait_for_pullback,
+            wait_for_pullback_pct=estimate.wait_for_pullback_pct,
+            pullback_entry_level=estimate.pullback_entry_level,
+            action_guidance=estimate.action_guidance,
+            position_size_label=position_size_label,
+            key_risks=key_risks,
+            key_opportunities=key_opportunities,
+            evidence_quality=estimate.confidence if estimate.confidence in {"high", "medium", "low"} else "low",
             source_tools=[],
+            data_limitations=list(estimate.data_limitations),
+            risk_assessment_reason=f"RiskRewardEngine action_guidance={estimate.action_guidance}",
+            downside_scenarios=list(estimate.downside_scenarios),
+            upside_scenarios=list(estimate.upside_scenarios),
+            stop_add_level=estimate.stop_add_level,
+            invalidation_level=estimate.invalidation_level,
+            trim_level=estimate.trim_level,
+            risk_reward_confidence=estimate.confidence,
+            risk_reward_thesis_broken=bool(fundamental and fundamental.thesis_broken),
             created_at=datetime_now(),
         )
 

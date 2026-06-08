@@ -34,6 +34,8 @@ class LongbridgeSdkBindings:
     OAuthBuilder: type
     QuoteContext: type
     ContentContext: type
+    CalendarContext: type | None
+    MarketContext: type | None
     module: Any
 
 
@@ -49,6 +51,10 @@ def normalize_longbridge_symbol(symbol: str) -> str:
 def _load_longbridge_sdk() -> LongbridgeSdkBindings | None:
     try:
         from longbridge.openapi import Config, ContentContext, HttpClient, OAuthBuilder, QuoteContext
+        import longbridge.openapi as openapi
+
+        CalendarContext = getattr(openapi, "CalendarContext", None)
+        MarketContext = getattr(openapi, "MarketContext", None)
 
         return LongbridgeSdkBindings(
             Config=Config,
@@ -56,6 +62,8 @@ def _load_longbridge_sdk() -> LongbridgeSdkBindings | None:
             OAuthBuilder=OAuthBuilder,
             QuoteContext=QuoteContext,
             ContentContext=ContentContext,
+            CalendarContext=CalendarContext,
+            MarketContext=MarketContext,
             module=import_module("longbridge.openapi"),
         )
     except ImportError:
@@ -206,6 +214,8 @@ class LongbridgeExternalDataClient:
         self._http_client: Any | None = None
         self._quote_context: Any | None = None
         self._content_context: Any | None = None
+        self._calendar_context: Any | None = None
+        self._market_context: Any | None = None
         self._fetch_lock = threading.Lock()
 
     @property
@@ -214,7 +224,7 @@ class LongbridgeExternalDataClient:
 
     @property
     def configured(self) -> bool:
-        return bool(self.settings.longbridge_openapi_oauth_client_id.strip())
+        return bool(self._oauth_client_id())
 
     @property
     def oauth_connected(self) -> bool:
@@ -476,6 +486,68 @@ class LongbridgeExternalDataClient:
             raise LongbridgeExternalDataError("Longbridge forecast EPS response is not an object")
         return payload
 
+    def get_finance_calendar(
+        self,
+        *,
+        start: str,
+        end: str,
+        market: str | None = None,
+        symbols: list[str] | None = None,
+    ) -> dict:
+        """Fetch read-only Longbridge finance calendar data."""
+        self._ensure_available()
+        if self._sdk.CalendarContext is None or not hasattr(self._sdk.module, "CalendarCategory"):
+            raise LongbridgeUnavailableError("Installed Longbridge SDK does not expose finance calendar APIs")
+        start_date, end_date = self._validate_date_range(start, end)
+        categories = {
+            "earnings": self._sdk.module.CalendarCategory.Report,
+            "dividends": self._sdk.module.CalendarCategory.Dividend,
+            "splits": self._sdk.module.CalendarCategory.Split,
+            "ipos": self._sdk.module.CalendarCategory.Ipo,
+        }
+        market_arg = self._resolve_market(market) if market else None
+        payload: dict[str, Any] = {}
+        try:
+            for key, category in categories.items():
+                payload[key] = _to_json_value(
+                    self._get_calendar_context().finance_calendar(category, start_date.isoformat(), end_date.isoformat(), market_arg)
+                )
+        except Exception as exc:
+            raise LongbridgeExternalDataError(f"Failed to fetch Longbridge finance calendar: {_format_longbridge_error(exc)}") from exc
+        return payload
+
+    def get_market_status(self, markets: list[str] | None = None) -> dict:
+        """Fetch read-only Longbridge market status data."""
+        self._ensure_available()
+        if self._sdk.MarketContext is None:
+            raise LongbridgeUnavailableError("Installed Longbridge SDK does not expose market status APIs")
+        try:
+            payload = _to_json_value(self._get_market_context().market_status())
+        except Exception as exc:
+            raise LongbridgeExternalDataError(f"Failed to fetch Longbridge market status: {_format_longbridge_error(exc)}") from exc
+        if not isinstance(payload, dict):
+            raise LongbridgeExternalDataError("Longbridge market status response is not an object")
+        return payload
+
+    def get_trading_days(self, *, market: str, start: str, end: str) -> dict:
+        """Fetch read-only Longbridge trading-day calendar data."""
+        self._ensure_available()
+        start_date, end_date = self._validate_date_range(start, end)
+        try:
+            payload = _to_json_value(self._get_quote_context().trading_days(self._resolve_market(market), start_date, end_date))
+        except Exception as exc:
+            raise LongbridgeExternalDataError(f"Failed to fetch Longbridge trading days: {_format_longbridge_error(exc)}") from exc
+        return {"closed_days": payload}
+
+    def get_trading_sessions(self, markets: list[str] | None = None) -> dict:
+        """Fetch read-only Longbridge trading-session data."""
+        self._ensure_available()
+        try:
+            payload = _to_json_value(self._get_quote_context().trading_session())
+        except Exception as exc:
+            raise LongbridgeExternalDataError(f"Failed to fetch Longbridge trading sessions: {_format_longbridge_error(exc)}") from exc
+        return payload if isinstance(payload, dict) else {"sessions": payload}
+
     def _validate_date_range(self, start: str, end: str) -> tuple[date, date]:
         start_date = _parse_api_date(start, "start")
         end_date = _parse_api_date(end, "end")
@@ -498,7 +570,10 @@ class LongbridgeExternalDataClient:
         if self._oauth is None:
             self.oauth_service.sync_sdk_token_cache()
             try:
-                self._oauth = self._sdk.OAuthBuilder(self.settings.longbridge_openapi_oauth_client_id).build(
+                client_id = self._oauth_client_id()
+                if not client_id:
+                    raise LongbridgeUnavailableError("Longbridge OpenAPI OAuth client_id is not configured")
+                self._oauth = self._sdk.OAuthBuilder(client_id).build(
                     lambda _url: (_ for _ in ()).throw(LongbridgeUnavailableError("Longbridge OpenAPI OAuth is not connected"))
                 )
             except LongbridgeUnavailableError:
@@ -506,6 +581,12 @@ class LongbridgeExternalDataClient:
             except Exception as exc:
                 raise LongbridgeUnavailableError(f"Failed to initialize Longbridge OpenAPI OAuth: {str(exc)[:200]}") from exc
         return self._oauth
+
+    def _oauth_client_id(self) -> str:
+        configured = self.settings.longbridge_openapi_oauth_client_id.strip()
+        if configured:
+            return configured
+        return str(self.oauth_service.status().get("client_id") or "").strip()
 
     def _get_config(self) -> Any:
         if self._config is None:
@@ -526,6 +607,30 @@ class LongbridgeExternalDataClient:
         if self._content_context is None:
             self._content_context = self._sdk.ContentContext(self._get_config())
         return self._content_context
+
+    def _get_calendar_context(self) -> Any:
+        if self._sdk.CalendarContext is None:
+            raise LongbridgeUnavailableError("Installed Longbridge SDK does not expose finance calendar APIs")
+        if self._calendar_context is None:
+            self._calendar_context = self._sdk.CalendarContext(self._get_config())
+        return self._calendar_context
+
+    def _get_market_context(self) -> Any:
+        if self._sdk.MarketContext is None:
+            raise LongbridgeUnavailableError("Installed Longbridge SDK does not expose market status APIs")
+        if self._market_context is None:
+            self._market_context = self._sdk.MarketContext(self._get_config())
+        return self._market_context
+
+    def _resolve_market(self, market: str | None) -> Any:
+        normalized = (market or "").upper()
+        if not normalized:
+            return None
+        if normalized in {"SH", "SZ"}:
+            normalized = "CN"
+        if hasattr(self._sdk.module.Market, normalized):
+            return normalized
+        raise ValueError("market must be one of: US, HK, CN, SG")
 
     def _fetch_candles(self, symbol: str, start: date, end: date, period: str, adjust_type: str) -> list[LongbridgeCandleItem]:
         self._ensure_available()

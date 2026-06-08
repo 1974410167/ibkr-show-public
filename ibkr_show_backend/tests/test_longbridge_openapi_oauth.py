@@ -228,7 +228,8 @@ def test_env_client_id_takes_priority_over_registration(tmp_path) -> None:
     assert service._client_id(service.store.read()) == "env-client-id"
 
 
-def test_complete_authorization_unaffected_by_registration(tmp_path) -> None:
+def test_complete_authorization_unaffected_by_registration(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     mock_http = MagicMock()
     token_response = MagicMock()
     token_response.status_code = 200
