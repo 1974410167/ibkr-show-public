@@ -1704,7 +1704,11 @@ RISK_REWARD_LLM_SYSTEM_PROMPT = (
 
 
 class RiskRewardSubAgent:
-    """Risk/reward assessment. Reads AccountFactSnapshot + other four cards. No MCP."""
+    """Legacy risk/reward assessment.
+
+    Risk/reward is now derived from TradePlanAgent in the graph. This class is
+    kept for historical tests and manual compatibility paths.
+    """
 
     def __init__(self, llm_service: LLMService) -> None:
         self.llm_service = llm_service

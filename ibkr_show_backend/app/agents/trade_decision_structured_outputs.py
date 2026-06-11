@@ -61,6 +61,56 @@ class RiskRewardLLMOutput(BaseModel):
     data_limitations: list[str] = Field(default_factory=list)
 
 
+class DebateThesisLLMOutput(BaseModel):
+    agent_name: Literal["bull_thesis", "bear_thesis"]
+    stance: Literal["bullish", "bearish"]
+    conviction: Literal["high", "medium", "low"] = "low"
+    summary: str = Field(min_length=1)
+    core_claims: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    weak_points: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    data_limitations: list[str] = Field(default_factory=list)
+
+
+class DebateRebuttalLLMOutput(BaseModel):
+    agent_name: Literal["bull_rebuttal", "bear_rebuttal"]
+    summary: str = Field(min_length=1)
+    accepted_opponent_points: list[str] = Field(default_factory=list)
+    rejected_opponent_points: list[str] = Field(default_factory=list)
+    reinforced_arguments: list[str] = Field(default_factory=list)
+    final_conviction: Literal["high", "medium", "low"] = "low"
+    data_limitations: list[str] = Field(default_factory=list)
+
+
+class DebateJudgeLLMOutput(BaseModel):
+    asset_stance: Literal["bullish", "neutral", "bearish", "insufficient_data"]
+    conviction: Literal["high", "medium", "low"] = "low"
+    winner: Literal["bull", "bear", "balanced", "insufficient_data"]
+    accepted_bull_points: list[str] = Field(default_factory=list)
+    accepted_bear_points: list[str] = Field(default_factory=list)
+    key_uncertainties: list[str] = Field(default_factory=list)
+    reasoning_summary: str = Field(min_length=1)
+    data_limitations: list[str] = Field(default_factory=list)
+
+
+class TradePlanLLMOutput(BaseModel):
+    asset_stance: Literal["bullish", "neutral", "bearish", "insufficient_data"]
+    portfolio_action: str = Field(min_length=1)
+    action_reason_type: str = Field(min_length=1)
+    current_position_pct: float | None = None
+    target_position_pct: float | None = None
+    adjustment_pct: float | None = None
+    suggested_cash_amount: float | None = None
+    max_position_pct: float | None = None
+    execution_conditions: list[str] = Field(default_factory=list)
+    invalidation_conditions: list[str] = Field(default_factory=list)
+    recheck_triggers: list[str] = Field(default_factory=list)
+    risk_reward_assessment: dict = Field(default_factory=dict)
+    data_limitations: list[str] = Field(default_factory=list)
+    summary: str = Field(min_length=1)
+
+
 def build_market_trend_contract() -> StructuredOutputContract:
     return StructuredOutputContract(
         name="trade_decision_market_trend",
@@ -111,6 +161,62 @@ def build_risk_reward_contract() -> StructuredOutputContract:
         output_model=RiskRewardLLMOutput,
         schema_hint=RiskRewardLLMOutput.model_json_schema(),
         examples=[RISK_REWARD_NORMAL_EXAMPLE, RISK_REWARD_INSUFFICIENT_DATA_EXAMPLE],
+        max_repair_attempts=1,
+        repair_enabled=True,
+        fallback_enabled=False,
+    )
+
+
+def build_debate_thesis_contract(node_name: str) -> StructuredOutputContract:
+    return StructuredOutputContract(
+        name=f"trade_decision_{node_name}",
+        agent_name="trade_decision",
+        node_name=node_name,
+        output_model=DebateThesisLLMOutput,
+        schema_hint=DebateThesisLLMOutput.model_json_schema(),
+        examples=[],
+        max_repair_attempts=1,
+        repair_enabled=True,
+        fallback_enabled=False,
+    )
+
+
+def build_debate_rebuttal_contract(node_name: str) -> StructuredOutputContract:
+    return StructuredOutputContract(
+        name=f"trade_decision_{node_name}",
+        agent_name="trade_decision",
+        node_name=node_name,
+        output_model=DebateRebuttalLLMOutput,
+        schema_hint=DebateRebuttalLLMOutput.model_json_schema(),
+        examples=[],
+        max_repair_attempts=1,
+        repair_enabled=True,
+        fallback_enabled=False,
+    )
+
+
+def build_debate_judge_contract() -> StructuredOutputContract:
+    return StructuredOutputContract(
+        name="trade_decision_debate_judge",
+        agent_name="trade_decision",
+        node_name="debate_judge",
+        output_model=DebateJudgeLLMOutput,
+        schema_hint=DebateJudgeLLMOutput.model_json_schema(),
+        examples=[],
+        max_repair_attempts=1,
+        repair_enabled=True,
+        fallback_enabled=False,
+    )
+
+
+def build_trade_plan_contract() -> StructuredOutputContract:
+    return StructuredOutputContract(
+        name="trade_decision_trade_plan",
+        agent_name="trade_decision",
+        node_name="trade_plan",
+        output_model=TradePlanLLMOutput,
+        schema_hint=TradePlanLLMOutput.model_json_schema(),
+        examples=[],
         max_repair_attempts=1,
         repair_enabled=True,
         fallback_enabled=False,

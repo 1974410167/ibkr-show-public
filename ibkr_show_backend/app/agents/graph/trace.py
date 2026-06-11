@@ -28,7 +28,11 @@ def start_node_trace(node_name: str) -> dict:
 
 
 def finish_node_trace(trace: dict, status: str = "success", **extra) -> dict:
-    elapsed = int((time.perf_counter() - trace.get("_start_perf", time.perf_counter())) * 1000)
+    start_perf = trace.get("_start_perf")
+    if start_perf is None:
+        elapsed = int(trace.get("elapsed_ms") or 0)
+    else:
+        elapsed = int((time.perf_counter() - start_perf) * 1000)
     result = {
         **trace,
         "finished_at": now_iso(),

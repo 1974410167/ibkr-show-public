@@ -475,6 +475,31 @@ def test_extract_raw_candles_from_trace_reads_items():
     assert candles[0]["close"] == 1.5
 
 
+def test_extract_raw_candles_from_trace_reads_engine_payload():
+    trace = [{
+        "event": "tool_finish",
+        "tool": "candlesticks",
+        "ok": True,
+        "arguments": {"symbol": "AAPL.US"},
+        "output": {
+            "data": {"sample_points": 2, "return_pct": 1.2},
+            "engine_payload": {
+                "kind": "ohlcv_candles",
+                "symbol": "AAPL.US",
+                "candles": [
+                    {"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100},
+                    {"open": 1.5, "high": 2.2, "low": 1.4, "close": 2.0, "volume": 120},
+                ],
+            },
+        },
+    }]
+
+    candles = extract_raw_candles_from_trace(trace, "candlesticks", "AAPL")
+
+    assert len(candles) == 2
+    assert candles[1]["close"] == 2.0
+
+
 def test_extract_benchmark_candles_from_trace_reads_each_symbol():
     trace = [
         {

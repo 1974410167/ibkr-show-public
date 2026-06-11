@@ -435,6 +435,12 @@ def extract_raw_candles_from_trace(trace: list[dict], tool_name: str = "candlest
             args = event.get("arguments") or {}
             if str(args.get("symbol") or "").upper().split(".")[0] != str(symbol).upper().split(".")[0]:
                 continue
+        engine_payload = output.get("engine_payload")
+        if isinstance(engine_payload, dict):
+            parsed = parse_candles(engine_payload.get("candles"))
+            if parsed:
+                return parsed
+
         data = output.get("data") or {}
         if not isinstance(data, dict):
             continue

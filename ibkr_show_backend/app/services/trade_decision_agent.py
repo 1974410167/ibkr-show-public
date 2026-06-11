@@ -2,6 +2,7 @@
 TradeDecisionAgent - thin facade over LangGraph runner.
 
 Main entry points:
+  - analyze_trade_decision(symbol)
   - analyze_entry(symbol, question)
   - analyze_holding(symbol, question)
   - health()
@@ -71,12 +72,20 @@ class TradeDecisionAgent:
     def _get_graph_runner(self) -> TradeDecisionGraphRunner:
         if self._graph_runner is None:
             from app.services.mcp.longbridge_mcp_tools import LongbridgeMCPToolAdapter
+            from app.services.market_event_query_service import MarketEventQueryService
 
             account_facts_builder = TradeDecisionAccountFactsBuilder(
                 self.repository.es_client,
                 self.repository.settings,
             )
             adapter = LongbridgeMCPToolAdapter(self._get_mcp_client())
+            try:
+                market_event_query_service = MarketEventQueryService(
+                    self.repository.es_client,
+                    self.repository.settings,
+                )
+            except Exception:
+                market_event_query_service = None
             self._graph_runner = TradeDecisionGraphRunner(
                 account_facts_builder=account_facts_builder,
                 llm_service=self.llm_service,
@@ -86,6 +95,7 @@ class TradeDecisionAgent:
                 trace_service=self.trace_service,
                 replay_service=self.replay_service,
                 monitoring_service=self.monitoring_service,
+                market_event_query_service=market_event_query_service,
             )
         return self._graph_runner
 
@@ -143,6 +153,17 @@ class TradeDecisionAgent:
             return runner.analyze_entry(normalized_symbol, question, progress_reporter=progress_reporter)
         return runner.analyze_entry(normalized_symbol, question)
 
+    def analyze_trade_decision(self, symbol: str, *, progress_reporter: Any = None) -> dict:
+        normalized_symbol = normalize_longbridge_symbol(symbol)
+        if not normalized_symbol:
+            raise ValueError("symbol is required")
+        if self.llm_service.get_active_provider() is None:
+            raise LLMConfigError("No active LLM provider is configured")
+        runner = self._get_graph_runner()
+        if progress_reporter is not None:
+            return runner.analyze_trade_decision(normalized_symbol, progress_reporter=progress_reporter)
+        return runner.analyze_trade_decision(normalized_symbol)
+
 
 def _build_card_pack_evidence_pack(card_pack) -> dict[str, Any]:
     """Build a display-oriented evidence pack from V2 cards for evidence_summary."""
@@ -152,6 +173,7 @@ def _build_card_pack_evidence_pack(card_pack) -> dict[str, Any]:
     fund = card_pack.fundamental_valuation_card
     evt = card_pack.event_catalyst_card
     rr = card_pack.risk_reward_card
+    trade_plan = getattr(card_pack, "trade_plan_card", None)
 
     public_tools = []
     for card in (mkt, fund, evt):
@@ -175,7 +197,7 @@ def _build_card_pack_evidence_pack(card_pack) -> dict[str, Any]:
         "company_context": _fundamental_company_context(fund, source=public_source),
         "valuation_context": _fundamental_valuation_context(fund, source=public_source),
         "external_events": _card_context(evt, source=public_source),
-        "risk_context": _card_context(rr, source="DETERMINISTIC_CARD"),
+        "risk_context": _risk_context_from_trade_plan_or_card(rr, trade_plan),
         "data_quality": snapshot.data_quality if hasattr(snapshot, "data_quality") else {},
     }
 
@@ -186,6 +208,27 @@ def _card_context(card, *, source: str) -> dict[str, Any]:
     payload = card.to_dict() if hasattr(card, "to_dict") else dict(card)
     payload["source"] = source
     return payload
+
+
+def _risk_context_from_trade_plan_or_card(card, trade_plan) -> dict[str, Any]:
+    if card is not None:
+        return _card_context(card, source="TRADE_PLAN_DERIVED_CARD")
+    if trade_plan is None:
+        return {}
+    assessment = getattr(trade_plan, "risk_reward_assessment", None)
+    if not isinstance(assessment, dict):
+        return {}
+    return {
+        "source": "TRADE_PLAN_RISK_REWARD_ASSESSMENT",
+        "summary": getattr(trade_plan, "summary", ""),
+        "reward_risk_ratio": assessment.get("reward_risk_ratio"),
+        "wait_for_pullback": assessment.get("wait_for_pullback"),
+        "pullback_entry_level": assessment.get("pullback_entry_level"),
+        "invalidation_level": assessment.get("invalidation_level"),
+        "trim_level": assessment.get("trim_level"),
+        "event_risk_window": assessment.get("event_risk_window"),
+        "data_limitations": list(getattr(trade_plan, "data_limitations", []) or []),
+    }
 
 
 def _fundamental_company_context(card, *, source: str) -> dict[str, Any]:

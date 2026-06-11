@@ -11,6 +11,7 @@ from app.api.deps import (
 from app.schemas.agent_tasks import AgentTaskListResponse, AgentTaskResponse
 from app.core.auth import AuthSession
 from app.schemas.trade_decision import (
+    TradeDecisionAnalyzeAutoRequest,
     TradeDecisionAnalyzeEntryRequest,
     TradeDecisionAnalyzeHoldingRequest,
     TradeDecisionHealthResponse,
@@ -25,6 +26,7 @@ from app.services.longbridge_service import LongbridgeExternalDataClient, normal
 from app.services.agent_task_repository import AgentTaskRepository
 from app.services.agent_task_progress import AgentTaskProgressReporter
 from app.services.trade_decision_agent import TradeDecisionAgent, TradeDecisionAgentError
+from app.services.trade_decision_quality_analytics import TradeDecisionQualityAnalyticsService
 from app.services.trade_decision_repository import TradeDecisionRepository
 
 router = APIRouter(prefix="/agent/trade-decision", tags=["trade-decision-agent"])
@@ -52,6 +54,10 @@ def _public_decision(document: dict) -> TradeDecisionResult:
         evidence_used=document.get("evidence_used") or [],
         data_source_summary=document.get("data_source_summary") or {},
         card_pack=document.get("card_pack") or {},
+        asset_debate=document.get("asset_debate") or {},
+        trade_plan=document.get("trade_plan") or {},
+        risk_gate=document.get("risk_gate") or {},
+        decision_quality=document.get("decision_quality") or {},
         run_trace=document.get("run_trace") or document.get("evidence_pack", {}).get("tool_trace") or [],
         metadata=document.get("metadata") or {},
         evidence_summary=document.get("evidence_summary") or {},
@@ -78,6 +84,11 @@ def _run_decision_task(task_id: str, task_repository: AgentTaskRepository, agent
             document = agent.analyze_entry(
                 symbol=str(payload.get("symbol") or ""),
                 question=payload.get("question"),
+                progress_reporter=AgentTaskProgressReporter(task_repository, task_id),
+            )
+        elif task.get("task_type") == "trade_decision":
+            document = agent.analyze_trade_decision(
+                symbol=str(payload.get("symbol") or ""),
                 progress_reporter=AgentTaskProgressReporter(task_repository, task_id),
             )
         elif task.get("task_type") == "holding_decision":
@@ -124,6 +135,32 @@ def list_decision_holdings(
     account_facts_builder=Depends(get_trade_decision_account_facts_builder),
 ) -> TradeDecisionHoldingsResponse:
     return TradeDecisionHoldingsResponse(items=account_facts_builder.list_current_holdings())
+
+
+@router.post("/tasks", response_model=AgentTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+def start_trade_decision_task(
+    payload: TradeDecisionAnalyzeAutoRequest,
+    background_tasks: BackgroundTasks,
+    _auth_session: AuthSession = Depends(require_authenticated_session),
+    agent: TradeDecisionAgent = Depends(get_trade_decision_agent),
+    task_repository: AgentTaskRepository = Depends(get_agent_task_repository),
+) -> AgentTaskResponse:
+    normalized = normalize_longbridge_symbol(payload.symbol)
+    task = task_repository.create_task(
+        agent=AGENT_NAME,
+        task_type="trade_decision",
+        label=f"{normalized} 交易决策",
+        payload={"symbol": normalized, "force_refresh": payload.force_refresh},
+    )
+    task_repository.init_graph_progress(
+        task["id"],
+        graph_version=TRADE_DECISION_GRAPH_VERSION,
+        nodes=TRADE_DECISION_GRAPH_NODES,
+        edges=TRADE_DECISION_GRAPH_EDGES,
+    )
+    task = task_repository.get_task(task["id"]) or task
+    background_tasks.add_task(_run_decision_task, task["id"], task_repository, agent)
+    return _public_task(task)
 
 
 @router.post("/holding/{symbol}/analyze", response_model=TradeDecisionResult)
@@ -239,6 +276,17 @@ def list_recent_decisions(
     repository: TradeDecisionRepository = Depends(get_trade_decision_repository),
 ) -> TradeDecisionListResponse:
     return TradeDecisionListResponse(items=[_public_decision(item) for item in repository.list_recent_decisions(limit, decision_type)])
+
+
+@router.get("/quality/summary")
+def get_trade_decision_quality_summary(
+    limit: int = Query(default=200, ge=1, le=1000),
+    days: int | None = Query(default=None, ge=1, le=365),
+    _auth_session: AuthSession = Depends(require_authenticated_session),
+    repository: TradeDecisionRepository = Depends(get_trade_decision_repository),
+) -> dict:
+    documents = repository.list_recent_decisions_for_quality(limit=limit, days=days)
+    return TradeDecisionQualityAnalyticsService().summarize(documents)
 
 
 @router.get("/symbol/{symbol}", response_model=TradeDecisionListResponse)

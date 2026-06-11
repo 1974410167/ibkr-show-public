@@ -190,7 +190,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   getMarketEventDetail,
   getMarketEventRiskSummary,
@@ -218,6 +218,8 @@ const offset = ref(0)
 const riskSummary = ref<MarketEventRiskSummaryResponse | null>(null)
 const sources = ref<MarketEventSourceStatus[]>([])
 const detailEvent = ref<MarketEventDetail | null>(null)
+const nowMs = ref(Date.now())
+const currentLocalDate = ref(localDateKey(new Date(nowMs.value)))
 
 const filters = reactive({
   importance: '',
@@ -226,10 +228,25 @@ const filters = reactive({
   keyword: '',
 })
 
-const nextEvent = computed(() => events.value[0] ?? null)
+const nextEvent = computed(() => {
+  const now = nowMs.value
+  return events.value.find((event) => new Date(event.scheduled_at).getTime() >= now) ?? null
+})
 const enabledSourceCount = computed(() => sources.value.filter((src) => src.enabled).length)
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+function localDateKey(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function startOfLocalDayIso(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString()
+}
 
 function debounceLoad() {
   if (debounceTimer) clearTimeout(debounceTimer)
@@ -245,6 +262,7 @@ async function loadEvents() {
   loading.value = true
   try {
     const params: Record<string, unknown> = {
+      start_at: startOfLocalDayIso(),
       limit: limit.value,
       offset: offset.value,
       sort_by: 'scheduled_at',
@@ -262,6 +280,17 @@ async function loadEvents() {
     events.value = []
   } finally {
     loading.value = false
+  }
+}
+
+function refreshClockAndMaybeReload() {
+  const nextNow = new Date()
+  nowMs.value = nextNow.getTime()
+  const nextDate = localDateKey(nextNow)
+  if (nextDate !== currentLocalDate.value) {
+    currentLocalDate.value = nextDate
+    resetAndLoad()
+    loadRiskSummary()
   }
 }
 
@@ -501,6 +530,12 @@ onMounted(() => {
   loadEvents()
   loadRiskSummary()
   loadSources()
+  refreshTimer = setInterval(refreshClockAndMaybeReload, 60_000)
+})
+
+onBeforeUnmount(() => {
+  if (debounceTimer) clearTimeout(debounceTimer)
+  if (refreshTimer) clearInterval(refreshTimer)
 })
 </script>
 

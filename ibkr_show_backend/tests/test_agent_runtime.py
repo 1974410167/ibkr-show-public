@@ -128,6 +128,27 @@ def test_tool_calling_runtime_executes_tool_calls_in_parallel() -> None:
     assert [item["event"] for item in result["trace"]].count("tool_finish") == 2
 
 
+def test_runtime_observation_serialization_strips_engine_payload() -> None:
+    runtime = ToolCallingRuntime(StubLLMService(), max_observation_chars=50000)
+    observation = {
+        "ok": True,
+        "tool": "candlesticks",
+        "data": {
+            "ok": True,
+            "data": {"sample_points": 2},
+            "engine_payload": {
+                "candles": [{"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100}],
+            },
+        },
+    }
+
+    serialized = runtime._serialize_observation(observation)
+
+    assert "engine_payload" not in serialized
+    assert '"candles"' not in serialized
+    assert "sample_points" in serialized
+
+
 def test_tool_calling_runtime_passes_max_tokens_to_llm() -> None:
     llm_service = StubLLMService()
     runtime = ToolCallingRuntime(llm_service, max_tokens=4096)

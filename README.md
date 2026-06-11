@@ -6,7 +6,7 @@ Most trading agents analyze stocks. **IBKR Trade Agent analyzes your actual port
 
 [中文文档](README.zh-CN.md)
 
-![License](https://img.shields.io/github/license/1974410167/ibkr-trade-agent)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![GitHub stars](https://img.shields.io/github/stars/1974410167/ibkr-trade-agent?style=social)
 ![Docker Compose](https://img.shields.io/badge/Docker%20Compose-ready-2496ED?logo=docker&logoColor=white)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)

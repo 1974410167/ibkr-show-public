@@ -225,6 +225,10 @@ class TradeDecisionComposer:
         # final position_advice use the same max_position_pct baseline.
         self._apply_thesis_to_position(output, card_pack)
 
+        # Stage 04: Let the LLM trade plan provide the draft account action
+        # before the deterministic Risk Gate validates or downgrades it.
+        self._apply_trade_plan_to_output(output, card_pack)
+
         # Stage 03: Attach investment thesis to the output.
         thesis = card_pack.investment_thesis or {}
         output["investment_thesis"] = thesis
@@ -238,6 +242,7 @@ class TradeDecisionComposer:
         from app.services.trade_decision_risk_gate import apply_risk_gate, make_fail_safe_result
 
         user_question = getattr(card_pack.account_fact_snapshot, "user_question", None)
+        action_before_risk_gate = output.get("action")
         try:
             output, gate_result = apply_risk_gate(output, card_pack, user_question=user_question)
         except Exception as gate_exc:
@@ -311,7 +316,7 @@ class TradeDecisionComposer:
         # If the gate changed the action, re-derive position_advice and
         # execution_plan for the new action and re-apply the thesis override
         # so action_constraints and final position_advice stay consistent.
-        if gate_result is not None and output.get("action") != result.action:
+        if gate_result is not None and output.get("action") != action_before_risk_gate:
             try:
                 new_pos = self._compute_position_advice(
                     card_pack.account_fact_snapshot,
@@ -370,6 +375,64 @@ class TradeDecisionComposer:
         self._apply_weak_catalyst_language(output, card_pack)
 
         return output
+
+    def _apply_trade_plan_to_output(self, output: dict, card_pack: TradeDecisionCardPack) -> None:
+        plan = getattr(card_pack, "trade_plan_card", None)
+        if plan is None:
+            return
+        plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else dict(plan or {})
+        output["trade_plan"] = plan_dict
+
+        data_limitations = list(plan_dict.get("data_limitations") or [])
+        assessment = plan_dict.get("risk_reward_assessment") if isinstance(plan_dict.get("risk_reward_assessment"), dict) else {}
+        sanitization_notes = list((assessment or {}).get("sanitization_notes") or [])
+        merged_limitations = list(output.get("data_limitations") or [])
+        for item in data_limitations + [f"trade_plan_sanitized:{note}" for note in sanitization_notes if note]:
+            if item and item not in merged_limitations:
+                merged_limitations.append(item)
+        output["data_limitations"] = merged_limitations
+
+        summary = str(plan_dict.get("summary") or "").strip()
+        if summary:
+            reason = f"交易计划: {summary[:240]}"
+            key_reasons = list(output.get("key_reasons") or [])
+            if reason not in key_reasons:
+                output["key_reasons"] = [reason, *key_reasons][:6]
+
+        downside = str((assessment or {}).get("downside_scenario") or "").strip()
+        event_window = str((assessment or {}).get("event_risk_window") or "").lower()
+        major_risks = list(output.get("major_risks") or [])
+        for risk in ([downside] if downside else []) + (["重点事件风险窗口较高，交易计划要求执行前复核"] if event_window in {"critical", "high"} else []):
+            if risk and risk not in major_risks:
+                major_risks.append(risk[:240])
+        output["major_risks"] = major_risks[:8]
+
+        skeleton_fallback = "trade_plan_agent_not_wired" in data_limitations
+        portfolio_action = normalize_action(plan_dict.get("portfolio_action") or "")
+        if skeleton_fallback and portfolio_action in {"hold_no_add", "watchlist"}:
+            return
+
+        output["action"] = portfolio_action
+        current_pct = _to_float(plan_dict.get("current_position_pct"))
+        target_pct = _to_float(plan_dict.get("target_position_pct"))
+        max_pct = _to_float(plan_dict.get("max_position_pct"))
+        suggested_cash = _to_float(plan_dict.get("suggested_cash_amount")) or 0
+        existing_position = output.get("position_advice") or {}
+        output["position_advice"] = {
+            "current_position_pct": current_pct,
+            "suggested_target_position_pct": target_pct,
+            "max_position_pct": max_pct,
+            "suggested_cash_amount": suggested_cash,
+            "position_size_label": existing_position.get("position_size_label") or _position_size_label(current_pct, target_pct),
+        }
+        output["execution_plan"] = {
+            "should_act_now": portfolio_action in {"add", "add_small", "add_batch", "add_right_side", "reduce_now", "sell_thesis_broken", "sell", "reduce"},
+            "plan": _trade_plan_conditions(plan_dict, portfolio_action),
+            "invalid_conditions": list(plan_dict.get("invalidation_conditions") or []),
+            "recheck_triggers": list(plan_dict.get("recheck_triggers") or []),
+        }
+        output["asset_stance"] = plan_dict.get("asset_stance")
+        output["action_reason_type"] = plan_dict.get("action_reason_type")
 
     def _compose(self, card_pack: TradeDecisionCardPack) -> ComposerResult:
         snapshot = card_pack.account_fact_snapshot
@@ -1256,6 +1319,46 @@ def _safe_float_local(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _to_float(value: Any) -> float | None:
+    return _safe_float_local(value)
+
+
+def _position_size_label(current_pct: float | None, target_pct: float | None) -> str:
+    current = current_pct or 0
+    target = target_pct or 0
+    if target <= 0:
+        return "none"
+    if target <= current:
+        return "keep"
+    if target < 0.03:
+        return "starter"
+    if target < 0.08:
+        return "small"
+    if target < 0.15:
+        return "medium"
+    return "large"
+
+
+def _trade_plan_conditions(plan_dict: dict[str, Any], action: str) -> list[dict]:
+    conditions = list(plan_dict.get("execution_conditions") or [])
+    if not conditions:
+        conditions = ["按交易计划草案等待条件满足"]
+    target_pct = _to_float(plan_dict.get("target_position_pct"))
+    amount = _to_float(plan_dict.get("suggested_cash_amount")) or 0
+    return [
+        {
+            "step": idx,
+            "condition": str(condition)[:1200],
+            "action": action,
+            "amount": amount if amount > 0 else None,
+            "target_position_pct": target_pct,
+            "risk_check": "执行前必须通过 deterministic Risk Gate，并确认未触发失效条件",
+            "note": str(plan_dict.get("summary") or "")[:500],
+        }
+        for idx, condition in enumerate(conditions[:8], start=1)
+    ]
 
 
 def _first_level(levels: Any) -> float | None:

@@ -3,6 +3,7 @@ import type {
   TradeDecisionHealth,
   TradeDecisionHoldingsResponse,
   TradeDecisionListResponse,
+  TradeDecisionQualitySummary,
   TradeDecisionResult,
 } from '@/types/tradeDecision'
 import type { AgentTask, AgentTaskListResponse } from '@/types/agentTasks'
@@ -24,6 +25,19 @@ export function fetchTradeDecisionHealth(): Promise<TradeDecisionHealth> {
 
 export function fetchTradeDecisionHoldings(): Promise<TradeDecisionHoldingsResponse> {
   return request<TradeDecisionHoldingsResponse>('/api/agent/trade-decision/holdings')
+}
+
+export function startTradeDecisionTask(payload: {
+  symbol: string
+  force_refresh?: boolean
+}): Promise<AgentTask> {
+  return request<AgentTask>('/api/agent/trade-decision/tasks', {
+    method: 'POST',
+    body: JSON.stringify({
+      symbol: payload.symbol,
+      force_refresh: Boolean(payload.force_refresh),
+    }),
+  })
 }
 
 export function startHoldingDecisionTask(payload: {
@@ -82,6 +96,15 @@ export function fetchTradeDecisionTask(taskId: string): Promise<AgentTask> {
 export async function fetchRecentTradeDecisions(params: { limit?: number; decision_type?: string } = {}): Promise<TradeDecisionResult[]> {
   const response = await request<TradeDecisionListResponse>(`/api/agent/trade-decision/recent${toQueryString(params)}`)
   return response.items
+}
+
+export function fetchTradeDecisionQualitySummary(params: {
+  limit?: number
+  days?: number
+} = {}): Promise<TradeDecisionQualitySummary> {
+  return request<TradeDecisionQualitySummary>(
+    `/api/agent/trade-decision/quality/summary${toQueryString(params)}`,
+  )
 }
 
 export async function fetchSymbolTradeDecisions(symbol: string, limit = 10): Promise<TradeDecisionResult[]> {

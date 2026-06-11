@@ -564,7 +564,7 @@ class ToolCallingRuntime:
         return value
 
     def _serialize_observation(self, value: Any) -> str:
-        text = json.dumps(value, ensure_ascii=False, default=str)
+        text = json.dumps(self._strip_engine_payload(value), ensure_ascii=False, default=str)
         if len(text) <= self.max_observation_chars:
             return text
         preview_limit = max(200, self.max_observation_chars - 300)
@@ -578,6 +578,19 @@ class ToolCallingRuntime:
         }
         fallback["final_size"] = len(json.dumps(fallback, ensure_ascii=False, default=str))
         return json.dumps(fallback, ensure_ascii=False, default=str)
+
+    @classmethod
+    def _strip_engine_payload(cls, value: Any) -> Any:
+        """Remove deterministic-engine payloads before sending tool results to the LLM."""
+        if isinstance(value, dict):
+            return {
+                key: cls._strip_engine_payload(item)
+                for key, item in value.items()
+                if key != "engine_payload"
+            }
+        if isinstance(value, list):
+            return [cls._strip_engine_payload(item) for item in value]
+        return value
 
     def _observation_trace_meta(self, execution: ToolExecution) -> dict[str, Any]:
         observation = {

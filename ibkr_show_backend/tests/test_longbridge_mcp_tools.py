@@ -334,6 +334,30 @@ class TestLongbridgeMCPToolAdapter:
         assert data["sample_points"] == 50
         assert data["return_pct"] == 53.47
 
+    def test_candlesticks_keep_engine_payload_outside_llm_data(self, adapter, mock_mcp_client):
+        """Raw OHLCV is retained for deterministic engines without bloating LLM-facing data."""
+        items = [
+            {"open": 100, "close": 105, "high": 110, "low": 99, "volume": 1000, "timestamp": "2024-01-01"},
+            {"open": 105, "close": 106, "high": 108, "low": 104, "volume": 1200, "timestamp": "2024-01-02"},
+        ]
+        mock_mcp_client.call_tool.return_value = {"ok": True, "data": {"items": items}}
+
+        result = adapter.call("candlesticks", {"symbol": "AAPL.US", "count": 2})
+
+        assert result["ok"] is True
+        assert "items" not in result["data"]
+        assert "candles" not in result["data"]
+        assert result["engine_payload"]["symbol"] == "AAPL.US"
+        assert result["engine_payload"]["kind"] == "ohlcv_candles"
+        assert result["engine_payload"]["candles"][0] == {
+            "timestamp": "2024-01-01",
+            "open": 100,
+            "high": 110,
+            "low": 99,
+            "close": 105,
+            "volume": 1000,
+        }
+
     def test_news_search_limited_to_15_items(self, adapter, mock_mcp_client):
         """News search output is limited to 15 compact items."""
         items = [{"title": f"News {i}", "published_at": "2024-01-01", "source": "WSJ", "summary": "Summary", "sentiment": "POSITIVE"} for i in range(20)]

@@ -73,6 +73,15 @@ class ElasticsearchClient:
         except ESConnectionError as exc:
             raise ESUnavailableError("Elasticsearch is not reachable.") from exc
 
+    def put_index_settings(self, index: str, settings: dict) -> None:
+        """Apply mutable settings (e.g. mapping limits) to an existing index."""
+        try:
+            if not self._client.indices.exists(index=index):
+                return
+            self._client.indices.put_settings(index=index, settings=settings)
+        except ESConnectionError as exc:
+            raise ESUnavailableError("Elasticsearch is not reachable.") from exc
+
     def update_by_query(self, index: str, body: dict) -> dict:
         try:
             return self._client.update_by_query(index=index, body=body, refresh=True)

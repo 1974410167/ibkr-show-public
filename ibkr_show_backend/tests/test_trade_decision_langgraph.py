@@ -4,23 +4,32 @@ import inspect
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from app.agents.trade_decision_cards import (
     AccountFactSnapshot,
     AccountFitCard,
     CardStance,
+    DebateJudgeCard,
     EventCatalystCard,
     FundamentalValuationCard,
     MarketTrendCard,
     RiskRewardCard,
     TradeDecisionCardPack,
     TradeDecisionSubAgentTrace,
+    TradePlanCard,
     build_fallback_account_fit_card,
+    build_fallback_debate_judge_card,
+    build_fallback_debate_rebuttal_card,
+    build_fallback_debate_thesis_card,
     build_fallback_event_card,
     build_fallback_fundamental_card,
+    build_fallback_market_event_context_card,
     build_fallback_market_trend_card,
     build_fallback_risk_reward_card,
+    build_fallback_trade_plan_card,
 )
+from app.schemas.market_event import MarketEventListItem
 from app.agents.graph.node_utils import strip_thinking_tags
 from app.agents.graph.trace import (
     start_node_trace,
@@ -217,7 +226,7 @@ class TestStateReducers:
 class TestGraphParallelStructure:
 
     def test_graph_has_parallel_edges(self):
-        """build_account_facts should fan out to 4 parallel nodes."""
+        """Graph should expose the multi-agent skeleton nodes."""
         from app.agents.trade_decision_graph.graph import build_trade_decision_graph, TradeDecisionGraphDeps
 
         deps = TradeDecisionGraphDeps(
@@ -237,13 +246,60 @@ class TestGraphParallelStructure:
         assert "market_trend" in node_names
         assert "fundamental_valuation" in node_names
         assert "event_catalyst" in node_names
-        assert "risk_reward" in node_names
+        assert "market_event_context" in node_names
+        assert "risk_reward" not in node_names
         assert "build_card_pack" in node_names
+        assert "bull_thesis" in node_names
+        assert "bear_thesis" in node_names
+        assert "bull_rebuttal" in node_names
+        assert "bear_rebuttal" in node_names
+        assert "debate_judge" in node_names
+        assert "trade_plan" in node_names
         assert "compose_decision" in node_names
         assert "persist_decision" in node_names
 
-    def test_build_account_facts_fans_out_to_four(self):
-        """build_account_facts node should have edges to all 4 sub-agent nodes."""
+    def test_declared_graph_nodes_include_multi_agent_skeleton(self):
+        from app.agents.trade_decision_graph.graph import TRADE_DECISION_GRAPH_NODES
+
+        node_ids = {node["id"] for node in TRADE_DECISION_GRAPH_NODES}
+        for node_id in {
+            "market_event_context",
+            "bull_thesis",
+            "bear_thesis",
+            "bull_rebuttal",
+            "bear_rebuttal",
+            "debate_judge",
+            "trade_plan",
+        }:
+            assert node_id in node_ids
+
+    def test_declared_graph_edges_include_multi_agent_skeleton(self):
+        from app.agents.trade_decision_graph.graph import TRADE_DECISION_GRAPH_EDGES
+
+        edges = {(edge["source"], edge["target"]) for edge in TRADE_DECISION_GRAPH_EDGES}
+        expected = {
+            ("build_account_facts", "market_event_context"),
+            ("account_fit", "build_card_pack"),
+            ("market_trend", "build_card_pack"),
+            ("fundamental_valuation", "build_card_pack"),
+            ("event_catalyst", "build_card_pack"),
+            ("market_event_context", "build_card_pack"),
+            ("build_card_pack", "bull_thesis"),
+            ("build_card_pack", "bear_thesis"),
+            ("bull_thesis", "bull_rebuttal"),
+            ("bear_thesis", "bull_rebuttal"),
+            ("bull_thesis", "bear_rebuttal"),
+            ("bear_thesis", "bear_rebuttal"),
+            ("bull_rebuttal", "debate_judge"),
+            ("bear_rebuttal", "debate_judge"),
+            ("debate_judge", "trade_plan"),
+            ("trade_plan", "compose_decision"),
+            ("compose_decision", "persist_decision"),
+        }
+        assert expected.issubset(edges)
+
+    def test_build_account_facts_fans_out_to_five(self):
+        """build_account_facts node should have edges to all 5 evidence nodes."""
         from app.agents.trade_decision_graph.graph import build_trade_decision_graph, TradeDecisionGraphDeps
 
         deps = TradeDecisionGraphDeps(
@@ -264,9 +320,10 @@ class TestGraphParallelStructure:
         assert "market_trend" in edges_from_facts
         assert "fundamental_valuation" in edges_from_facts
         assert "event_catalyst" in edges_from_facts
+        assert "market_event_context" in edges_from_facts
 
-    def test_four_subagents_fan_in_to_risk_reward(self):
-        """All 4 sub-agent nodes should have edges to risk_reward."""
+    def test_five_evidence_nodes_fan_in_to_build_card_pack(self):
+        """All 5 evidence nodes should have edges to build_card_pack."""
         from app.agents.trade_decision_graph.graph import build_trade_decision_graph, TradeDecisionGraphDeps
 
         deps = TradeDecisionGraphDeps(
@@ -278,14 +335,38 @@ class TestGraphParallelStructure:
         graph = build_trade_decision_graph(deps)
         graph_obj = graph.get_graph()
 
-        edges_to_risk = [
+        edges_to_build_card_pack = [
             edge.source for edge in graph_obj.edges
-            if edge.target == "risk_reward"
+            if edge.target == "build_card_pack"
         ]
-        assert "account_fit" in edges_to_risk
-        assert "market_trend" in edges_to_risk
-        assert "fundamental_valuation" in edges_to_risk
-        assert "event_catalyst" in edges_to_risk
+        assert "account_fit" in edges_to_build_card_pack
+        assert "market_trend" in edges_to_build_card_pack
+        assert "fundamental_valuation" in edges_to_build_card_pack
+        assert "event_catalyst" in edges_to_build_card_pack
+        assert "market_event_context" in edges_to_build_card_pack
+
+    def test_debate_and_trade_plan_edges(self):
+        from app.agents.trade_decision_graph.graph import build_trade_decision_graph, TradeDecisionGraphDeps
+
+        deps = TradeDecisionGraphDeps(
+            account_facts_builder=MagicMock(),
+            llm_service=MagicMock(),
+            repository=MagicMock(),
+            mcp_adapter=None,
+        )
+        graph = build_trade_decision_graph(deps)
+        graph_obj = graph.get_graph()
+        edges = {(edge.source, edge.target) for edge in graph_obj.edges}
+        assert ("build_card_pack", "bull_thesis") in edges
+        assert ("build_card_pack", "bear_thesis") in edges
+        assert ("bull_thesis", "bull_rebuttal") in edges
+        assert ("bear_thesis", "bull_rebuttal") in edges
+        assert ("bull_thesis", "bear_rebuttal") in edges
+        assert ("bear_thesis", "bear_rebuttal") in edges
+        assert ("bull_rebuttal", "debate_judge") in edges
+        assert ("bear_rebuttal", "debate_judge") in edges
+        assert ("debate_judge", "trade_plan") in edges
+        assert ("trade_plan", "compose_decision") in edges
 
 
 # === Test: Risk reward data quality constraints ===
@@ -423,8 +504,15 @@ class TestNodesClosureDeps:
             make_market_trend_node,
             make_fundamental_valuation_node,
             make_event_catalyst_node,
+            make_market_event_context_node,
             make_risk_reward_node,
             make_build_card_pack_node,
+            make_bull_thesis_node,
+            make_bear_thesis_node,
+            make_bull_rebuttal_node,
+            make_bear_rebuttal_node,
+            make_debate_judge_node,
+            make_trade_plan_node,
             make_compose_decision_node,
             make_persist_decision_node,
         )
@@ -435,8 +523,15 @@ class TestNodesClosureDeps:
             make_market_trend_node,
             make_fundamental_valuation_node,
             make_event_catalyst_node,
+            make_market_event_context_node,
             make_risk_reward_node,
             make_build_card_pack_node,
+            make_bull_thesis_node,
+            make_bear_thesis_node,
+            make_bull_rebuttal_node,
+            make_bear_rebuttal_node,
+            make_debate_judge_node,
+            make_trade_plan_node,
             make_compose_decision_node,
             make_persist_decision_node,
         ]:
@@ -515,7 +610,7 @@ class TestGraphRunner:
         mock_builder = MagicMock()
         mock_builder.build.side_effect = RuntimeError("ES down")
         mock_repo = MagicMock()
-        mock_repo.save_decision.return_value = {"id": "fallback-1", "fallback_used": True}
+        mock_repo.save_decision.side_effect = lambda document: {**document, "id": "fallback-1"}
 
         runner = TradeDecisionGraphRunner(
             account_facts_builder=mock_builder,
@@ -527,6 +622,68 @@ class TestGraphRunner:
         result = runner.analyze_entry("AAPL")
         assert result is not None
         assert "id" in result
+        assert result["decision_quality"]["level"] == "poor"
+        assert result["decision_quality"]["fallback_used"] is True
+
+    def test_runner_analyze_trade_decision_uses_unified_decision_type_without_question(self):
+        from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
+
+        runner = TradeDecisionGraphRunner(
+            account_facts_builder=MagicMock(),
+            llm_service=MagicMock(),
+            repository=MagicMock(),
+            mcp_adapter=None,
+        )
+        captured = {}
+        runner._run = MagicMock(side_effect=lambda decision_type, symbol, question, **kwargs: captured.update({
+            "decision_type": decision_type,
+            "symbol": symbol,
+            "question": question,
+            "progress_reporter": kwargs.get("progress_reporter"),
+        }) or {"id": "decision-1"})
+        reporter = MagicMock()
+
+        result = runner.analyze_trade_decision("AAPL", progress_reporter=reporter)
+
+        assert result["id"] == "decision-1"
+        assert captured == {
+            "decision_type": "trade_decision",
+            "symbol": "AAPL.US",
+            "question": None,
+            "progress_reporter": reporter,
+        }
+
+    def test_agent_analyze_trade_decision_delegates_without_question(self):
+        from app.services.trade_decision_agent import TradeDecisionAgent
+
+        llm = MagicMock()
+        llm.get_active_provider.return_value = object()
+        runner = MagicMock()
+        runner.analyze_trade_decision.return_value = {"id": "decision-1"}
+        agent = TradeDecisionAgent(None, llm, MagicMock())
+        agent._graph_runner = runner
+        reporter = MagicMock()
+
+        result = agent.analyze_trade_decision("AAPL", progress_reporter=reporter)
+
+        assert result["id"] == "decision-1"
+        runner.analyze_trade_decision.assert_called_once_with("AAPL.US", progress_reporter=reporter)
+
+    def test_account_facts_trade_decision_uses_holding_trade_history_limit(self):
+        from app.services.trade_decision_account_facts import TradeDecisionAccountFactsBuilder
+
+        builder = TradeDecisionAccountFactsBuilder.__new__(TradeDecisionAccountFactsBuilder)
+        builder._fetch_current_position = MagicMock(return_value=None)
+        builder._fetch_symbol_trades = MagicMock(return_value=[])
+        builder._build_account_context = MagicMock(return_value={})
+        builder._build_position_context = MagicMock(return_value={"is_holding": False, "position_pct": 0.0})
+        builder._build_trade_history_context = MagicMock(return_value={})
+        builder._build_review_context = MagicMock(return_value={})
+
+        snapshot = builder.build("trade_decision", "AAPL.US", None)
+
+        assert snapshot.decision_type == "trade_decision"
+        builder._fetch_symbol_trades.assert_called_once_with("AAPL", limit=50)
 
 
 # === Test: Build card pack node ===
@@ -559,7 +716,153 @@ class TestBuildCardPackNode:
         assert card_pack.market_trend_card is not None
         assert card_pack.fundamental_valuation_card is not None
         assert card_pack.event_catalyst_card is not None
-        assert card_pack.risk_reward_card is not None
+        assert card_pack.market_event_context_card is not None
+        assert card_pack.risk_reward_card is None
+
+    def test_market_event_context_trace_enters_subagent_traces(self):
+        from app.agents.trade_decision_graph.nodes import make_build_card_pack_node
+
+        snapshot = _make_snapshot()
+        mock_deps = MagicMock()
+        node_fn = make_build_card_pack_node(mock_deps)
+
+        state = {
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+            "account_fact_snapshot": snapshot,
+            "account_fit_card": _make_fallback_card("account_fit"),
+            "market_trend_card": _make_fallback_card("market_trend"),
+            "fundamental_valuation_card": _make_fallback_card("fundamental_valuation"),
+            "event_catalyst_card": _make_fallback_card("event_catalyst"),
+            "market_event_context_card": build_fallback_market_event_context_card("AAPL", "entry_decision", "test"),
+            "risk_reward_card": _make_fallback_card("risk_reward"),
+            "node_traces": [
+                {
+                    "node_name": "market_event_context",
+                    "status": "fallback",
+                    "elapsed_ms": 1,
+                    "fallback_used": True,
+                    "fallback_reason": "market_event_context_not_wired",
+                }
+            ],
+        }
+
+        result = node_fn(state)
+        card_pack = result["card_pack"]
+        assert card_pack.market_event_context_card is not None
+        assert "market_event_context" in [trace.sub_agent_name for trace in card_pack.subagent_traces]
+
+
+class TestMultiAgentSkeletonNodes:
+
+    def test_market_event_context_fallback_node(self):
+        from app.agents.trade_decision_graph.nodes import make_market_event_context_node
+
+        result = make_market_event_context_node(SimpleNamespace(market_event_query_service=None))({
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+        })
+        assert result["market_event_context_card"].risk_level == "unknown"
+        assert result["node_traces"][0]["node_name"] == "market_event_context"
+        assert result["node_traces"][0]["fallback_used"] is True
+
+    def test_debate_skeleton_fallback_nodes(self):
+        from app.agents.trade_decision_graph.nodes import (
+            make_bear_rebuttal_node,
+            make_bear_thesis_node,
+            make_bull_rebuttal_node,
+            make_bull_thesis_node,
+            make_debate_judge_node,
+        )
+
+        snapshot = _make_snapshot()
+        state = {
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+            "account_fact_snapshot": snapshot,
+            "market_trend_card": _make_fallback_card("market_trend"),
+            "fundamental_valuation_card": _make_fallback_card("fundamental_valuation"),
+            "event_catalyst_card": _make_fallback_card("event_catalyst"),
+        }
+        bull = make_bull_thesis_node(MagicMock())(state)
+        bear = make_bear_thesis_node(MagicMock())({**state, **bull})
+        bull_rebuttal = make_bull_rebuttal_node(MagicMock())({**state, **bull, **bear})
+        bear_rebuttal = make_bear_rebuttal_node(MagicMock())({**state, **bull, **bear})
+        judge = make_debate_judge_node(MagicMock())({**state, **bull, **bear, **bull_rebuttal, **bear_rebuttal})
+
+        assert bull["bull_thesis_card"].stance == "bullish"
+        assert bear["bear_thesis_card"].stance == "bearish"
+        assert bull_rebuttal["bull_rebuttal_card"].final_conviction == "low"
+        assert bear_rebuttal["bear_rebuttal_card"].final_conviction == "low"
+        assert judge["debate_judge_card"].asset_stance == "insufficient_data"
+
+    def test_trade_plan_fallback_node_holding_and_entry(self):
+        from app.agents.trade_decision_graph.nodes import make_trade_plan_node
+
+        node_fn = make_trade_plan_node(MagicMock())
+        holding_snapshot = _make_snapshot(is_holding=True)
+        holding_snapshot.position_pct = 12.5
+        holding = node_fn({
+            "symbol": "AAPL",
+            "account_fact_snapshot": holding_snapshot,
+            "debate_judge_card": build_fallback_debate_judge_card("AAPL", "test"),
+        })
+        entry = node_fn({
+            "symbol": "MSFT",
+            "account_fact_snapshot": _make_snapshot(symbol="MSFT", is_holding=False),
+            "debate_judge_card": build_fallback_debate_judge_card("MSFT", "test"),
+        })
+
+        assert holding["trade_plan_card"].portfolio_action == "hold_no_add"
+        assert holding["trade_plan_card"].target_position_pct == 12.5
+        assert entry["trade_plan_card"].portfolio_action == "watchlist"
+        assert entry["trade_plan_card"].suggested_cash_amount == 0.0
+
+    def test_trade_plan_agent_sanitizes_llm_position_and_action(self):
+        from app.services.trade_decision_trade_plan_agent import TradeDecisionTradePlanAgent
+
+        class FakeLLM:
+            def chat(self, messages, **kwargs):
+                return """
+                {
+                  "asset_stance": "insufficient_data",
+                  "portfolio_action": "add_batch",
+                  "action_reason_type": "asset_view",
+                  "current_position_pct": 0.99,
+                  "target_position_pct": 0.20,
+                  "adjustment_pct": 0.20,
+                  "suggested_cash_amount": 999999,
+                  "max_position_pct": 0.20,
+                  "execution_conditions": ["立刻建仓"],
+                  "invalidation_conditions": ["证据缺失"],
+                  "recheck_triggers": ["数据改善"],
+                  "risk_reward_assessment": {"entry_quality": "unknown"},
+                  "data_limitations": ["公开数据不足"],
+                  "summary": "数据不足但模型误给了激进建仓。"
+                }
+                """
+
+        snapshot = _make_snapshot(is_holding=False)
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        card_pack.account_fit_card.max_suggested_position_pct = 0.05
+        judge_card = DebateJudgeCard(
+            symbol="AAPL",
+            asset_stance="insufficient_data",
+            conviction="low",
+            winner="insufficient_data",
+            reasoning_summary="公开数据不足。",
+        )
+
+        card, trace = TradeDecisionTradePlanAgent(FakeLLM()).generate(card_pack, judge_card)
+
+        assert trace.status == "completed"
+        assert card.current_position_pct == 0.0
+        assert card.target_position_pct == 0.0
+        assert card.adjustment_pct == 0.0
+        assert card.portfolio_action == "watchlist"
+        assert card.suggested_cash_amount == 0.0
+        assert "target_position_pct_truncated_to_max_position_pct" in card.risk_reward_assessment["sanitization_notes"]
+        assert "insufficient_data_add_downgraded" in card.risk_reward_assessment["sanitization_notes"]
 
 
 # === Test: Compose decision data quality constraints ===
@@ -647,6 +950,190 @@ class TestComposeDecisionConstraints:
         # Should not raise AttributeError
         result = node_fn(state)
         assert "decision_output" in result
+
+    def test_compose_appends_debate_and_trade_plan_without_overriding_action(self):
+        from app.agents.trade_decision_graph.nodes import make_compose_decision_node
+
+        snapshot = _make_snapshot(is_holding=False)
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        judge_card = build_fallback_debate_judge_card("AAPL", "test")
+        trade_plan_card = build_fallback_trade_plan_card("AAPL", snapshot, judge_card, "test")
+
+        node_fn = make_compose_decision_node(MagicMock())
+        result = node_fn({
+            "card_pack": card_pack,
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+            "account_fact_snapshot": snapshot,
+            "account_fit_card": card_pack.account_fit_card,
+            "market_trend_card": card_pack.market_trend_card,
+            "fundamental_valuation_card": card_pack.fundamental_valuation_card,
+            "event_catalyst_card": card_pack.event_catalyst_card,
+            "risk_reward_card": card_pack.risk_reward_card,
+            "debate_judge_card": judge_card,
+            "trade_plan_card": trade_plan_card,
+            "node_traces": [],
+        })
+
+        output = result["decision_output"]
+        assert output["asset_debate"]["asset_stance"] == "neutral"
+        assert output["trade_plan"]["portfolio_action"] == "watchlist"
+
+    def test_composer_consumes_real_trade_plan_before_risk_gate(self):
+        from app.agents.trade_decision_graph.nodes import make_compose_decision_node
+
+        snapshot = _make_snapshot(is_holding=False)
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        card_pack.trade_plan_card = TradePlanCard(
+            symbol="AAPL",
+            asset_stance="bullish",
+            portfolio_action="add_on_pullback",
+            action_reason_type="asset_view_and_account_fit",
+            current_position_pct=0.0,
+            target_position_pct=0.04,
+            adjustment_pct=0.04,
+            suggested_cash_amount=2000.0,
+            max_position_pct=0.08,
+            execution_conditions=["等待回调后分批建仓"],
+            invalidation_conditions=["基本面假设破坏"],
+            recheck_triggers=["回调到计划区域"],
+            risk_reward_assessment={"sanitization_notes": []},
+            data_limitations=[],
+            summary="计划等待回调后小仓位建仓。",
+        )
+
+        result = make_compose_decision_node(MagicMock())({
+            "card_pack": card_pack,
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+            "account_fact_snapshot": snapshot,
+            "account_fit_card": card_pack.account_fit_card,
+            "market_trend_card": card_pack.market_trend_card,
+            "fundamental_valuation_card": card_pack.fundamental_valuation_card,
+            "event_catalyst_card": card_pack.event_catalyst_card,
+            "risk_reward_card": card_pack.risk_reward_card,
+            "node_traces": [],
+        })
+
+        output = result["decision_output"]
+        assert output["risk_gate"]["original_action"] == "add_on_pullback"
+        assert output["trade_plan"]["portfolio_action"] == "add_on_pullback"
+        assert output["asset_stance"] == "bullish"
+        assert output["action_reason_type"] == "asset_view_and_account_fit"
+
+
+class TestPersistDecisionMultiAgentSkeleton:
+
+    def test_saved_document_card_pack_contains_new_cards_and_metadata(self):
+        from app.agents.trade_decision_graph.nodes import make_persist_decision_node
+
+        snapshot = _make_snapshot()
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        market_event_context_card = build_fallback_market_event_context_card("AAPL", "entry_decision", "test")
+        bull_thesis_card = build_fallback_debate_thesis_card("AAPL", "bull_thesis", "test")
+        bear_thesis_card = build_fallback_debate_thesis_card("AAPL", "bear_thesis", "test")
+        bull_rebuttal_card = build_fallback_debate_rebuttal_card("AAPL", "bull_rebuttal", "test")
+        bear_rebuttal_card = build_fallback_debate_rebuttal_card("AAPL", "bear_rebuttal", "test")
+        debate_judge_card = build_fallback_debate_judge_card("AAPL", "test")
+        trade_plan_card = build_fallback_trade_plan_card("AAPL", snapshot, debate_judge_card, "test")
+
+        mock_deps = MagicMock()
+        mock_deps.repository.save_decision.side_effect = lambda document: {**document, "id": "saved-1"}
+        node_fn = make_persist_decision_node(mock_deps)
+        state = {
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+            "user_question": None,
+            "account_fact_snapshot": snapshot,
+            "card_pack": card_pack,
+            "decision_output": {
+                "action": "watchlist",
+                "confidence": "medium",
+                "decision_summary": "summary",
+                "key_reasons": [],
+                "data_source_summary": {},
+            },
+            "market_event_context_card": market_event_context_card,
+            "bull_thesis_card": bull_thesis_card,
+            "bear_thesis_card": bear_thesis_card,
+            "bull_rebuttal_card": bull_rebuttal_card,
+            "bear_rebuttal_card": bear_rebuttal_card,
+            "debate_judge_card": debate_judge_card,
+            "trade_plan_card": trade_plan_card,
+            "node_traces": [
+                {"node_name": "market_event_context", "status": "fallback", "elapsed_ms": 1, "fallback_used": True},
+                {"node_name": "bull_thesis", "status": "fallback", "elapsed_ms": 1, "fallback_used": True},
+                {"node_name": "bear_thesis", "status": "fallback", "elapsed_ms": 1, "fallback_used": True},
+                {"node_name": "bull_rebuttal", "status": "fallback", "elapsed_ms": 1, "fallback_used": True},
+                {"node_name": "bear_rebuttal", "status": "fallback", "elapsed_ms": 1, "fallback_used": True},
+                {"node_name": "debate_judge", "status": "fallback", "elapsed_ms": 1, "fallback_used": True},
+                {"node_name": "trade_plan", "status": "fallback", "elapsed_ms": 1, "fallback_used": True},
+            ],
+        }
+
+        with patch("app.agents.trade_decision_graph.nodes.build_evidence_summary", return_value={}):
+            result = node_fn(state)
+
+        saved = result["saved_document"]
+        saved_card_pack = saved["card_pack"]
+        for field_name in (
+            "market_event_context_card",
+            "bull_thesis_card",
+            "bear_thesis_card",
+            "bull_rebuttal_card",
+            "bear_rebuttal_card",
+            "debate_judge_card",
+            "trade_plan_card",
+            "risk_reward_card",
+        ):
+            assert saved_card_pack[field_name] is not None
+        assert saved["metadata"]["multi_agent_architecture"]["debate_enabled"] is True
+        assert saved["metadata"]["multi_agent_architecture"]["trade_plan_enabled"] is True
+        assert saved["metadata"]["multi_agent_architecture"]["market_event_context_enabled"] is True
+        assert saved["metadata"]["multi_agent_architecture"]["stage"] == "debate_and_trade_plan_llm"
+        assert saved["metadata"]["multi_agent_architecture"]["trade_plan_stage"] == "llm_enabled"
+        assert saved["decision_quality"]["checks"]["graph_integrity"]
+        assert saved["decision_quality"]["checks"]["risk_reward_source_integrity"]
+        assert saved["metadata"]["decision_quality"]["version"] == "trade_decision_quality_v1"
+        run_trace_nodes = [event["node_name"] for event in saved["run_trace"]]
+        assert "risk_reward" not in run_trace_nodes
+        assert "trade_plan" in run_trace_nodes
+
+    def test_quality_evaluator_failure_does_not_block_persist(self):
+        from app.agents.trade_decision_graph.nodes import make_persist_decision_node
+
+        snapshot = _make_snapshot()
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        mock_deps = MagicMock()
+        captured = {}
+        mock_deps.repository.save_decision.side_effect = lambda document: captured.update(document) or {**document, "id": "saved-1"}
+        node_fn = make_persist_decision_node(mock_deps)
+        state = {
+            "decision_type": "entry_decision",
+            "symbol": "AAPL",
+            "user_question": None,
+            "account_fact_snapshot": snapshot,
+            "card_pack": card_pack,
+            "decision_output": {
+                "action": "watchlist",
+                "confidence": "medium",
+                "decision_summary": "summary",
+                "key_reasons": [],
+                "data_source_summary": {},
+                "risk_gate": {"original_action": "watchlist", "final_action": "watchlist"},
+            },
+            "node_traces": [{"node_name": "trade_plan", "status": "success", "elapsed_ms": 1}],
+        }
+
+        with patch("app.agents.trade_decision_graph.nodes.build_evidence_summary", return_value={}), patch(
+            "app.services.trade_decision_quality_evaluator.TradeDecisionQualityEvaluator.evaluate",
+            side_effect=RuntimeError("quality boom"),
+        ):
+            result = node_fn(state)
+
+        assert result["saved_document"]["id"] == "saved-1"
+        assert captured["decision_quality"]["fallback_used"] is True
+        assert captured["decision_quality"]["flags"] == ["quality_evaluator_failed"]
 
 
 # === Test: Snapshot helper ===
@@ -828,14 +1315,121 @@ class TestSuccessPath:
         assert "agent_replay" in final_doc
         assert "replay_id" in final_doc["agent_replay"]
 
+    def test_runner_persists_real_market_event_context_card(self):
+        """Full graph should persist market_event_context_card when the service returns events."""
+        from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
+
+        snapshot = _make_snapshot()
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = snapshot
+        mock_repo = MagicMock()
+        mock_repo.save_decision.side_effect = lambda doc: {**doc, "id": "market-event-test"}
+
+        mock_adapter = MagicMock()
+        mock_adapter.client = MagicMock()
+        type(mock_adapter.client).enabled = PropertyMock(return_value=False)
+        mock_llm = MagicMock()
+
+        market_event = MarketEventListItem(
+            id="evt-aapl-earnings",
+            title="AAPL Earnings",
+            summary="Apple reports earnings",
+            category="COMPANY",
+            event_type="EARNINGS",
+            status="SCHEDULED",
+            importance="HIGH",
+            source_code="MANUAL",
+            country="US",
+            market="US",
+            symbols=["AAPL"],
+            asset_classes=["equity"],
+            scheduled_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+            scheduled_timezone="UTC",
+        )
+        market_event_service = MagicMock()
+        market_event_service.get_symbol_events.return_value = SimpleNamespace(items=[market_event], total=1, limit=50, offset=0)
+
+        now = "2024-01-01T00:00:00Z"
+
+        def make_trace(name):
+            return TradeDecisionSubAgentTrace(
+                sub_agent_name=name, status="completed",
+                started_at=now, finished_at=now, elapsed_ms=50,
+            )
+
+        acc_card = AccountFitCard(
+            card_type="account_fit", symbol="AAPL", decision_type="entry_decision",
+            summary="ok", score=16, max_score=20, stance=CardStance.BULLISH,
+            account_fit_level="good", evidence_quality="high", source_tools=[],
+        )
+        mkt_card = MarketTrendCard(
+            card_type="market_trend", symbol="AAPL", decision_type="entry_decision",
+            summary="ok", score=12, max_score=15, stance=CardStance.BULLISH,
+            price_trend="bullish", evidence_quality="medium", source_tools=["quote"],
+        )
+        fund_card = FundamentalValuationCard(
+            card_type="fundamental_valuation", symbol="AAPL", decision_type="entry_decision",
+            summary="ok", score=20, max_score=35, stance=CardStance.BULLISH,
+            pe_ttm=22.0, evidence_quality="medium", source_tools=["company"],
+        )
+        evt_card = EventCatalystCard(
+            card_type="event_catalyst", symbol="AAPL", decision_type="entry_decision",
+            summary="ok", score=4, max_score=5, stance=CardStance.BULLISH,
+            sentiment="positive", evidence_quality="medium", source_tools=["news"],
+        )
+        rr_card = RiskRewardCard(
+            card_type="risk_reward", symbol="AAPL", decision_type="entry_decision",
+            summary="ok", score=12, max_score=15, stance=CardStance.BULLISH,
+            reward_risk_ratio=2.5, evidence_quality="medium", source_tools=[],
+        )
+
+        with patch(
+            "app.services.trade_decision_sub_agents.AccountFitSubAgent.generate",
+            return_value=(acc_card, make_trace("account_fit")),
+        ), patch(
+            "app.services.trade_decision_sub_agents.MarketTrendSubAgent.generate",
+            return_value=(mkt_card, make_trace("market_trend")),
+        ), patch(
+            "app.services.trade_decision_sub_agents.FundamentalValuationSubAgent.generate",
+            return_value=(fund_card, make_trace("fundamental_valuation")),
+        ), patch(
+            "app.services.trade_decision_sub_agents.EventCatalystSubAgent.generate",
+            return_value=(evt_card, make_trace("event_catalyst")),
+        ), patch(
+            "app.services.trade_decision_sub_agents.RiskRewardSubAgent.generate",
+            return_value=(rr_card, make_trace("risk_reward")),
+        ):
+            runner = TradeDecisionGraphRunner(
+                account_facts_builder=mock_builder,
+                llm_service=mock_llm,
+                repository=mock_repo,
+                mcp_adapter=mock_adapter,
+                market_event_query_service=market_event_service,
+            )
+            runner.analyze_entry("AAPL")
+
+        final_doc = mock_repo.save_decision.call_args_list[1][0][0]
+        market_card = final_doc["card_pack"]["market_event_context_card"]
+        assert market_card["risk_level"] == "high"
+        assert market_card["upcoming_events"][0]["id"] == "evt-aapl-earnings"
+        assert market_card["symbol_events"]
+        market_trace = [item for item in final_doc["run_trace"] if item["node_name"] == "market_event_context"][0]
+        assert market_trace["status"] == "success"
+        assert "market_event_query_service.get_symbol_events" in market_trace["tools_called"]
+        assert final_doc["metadata"]["market_event_context"] == {
+            "enabled": True,
+            "days": 30,
+            "include_macro": True,
+        }
+
 
 # === Test: Fan-in execution semantics ===
 
 class TestFanInExecutionSemantics:
     """Tests that verify real graph execution: fan-in waits, no duplicate runs."""
 
-    def test_risk_reward_waits_for_all_four_parallel_cards_and_runs_once(self):
-        """risk_reward must run once, after all 4 parallel cards are ready."""
+    def test_trade_plan_derives_risk_reward_after_evidence_fan_in(self):
+        """trade_plan derives risk_reward_card after all evidence cards are packed."""
         from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
 
         snapshot = _make_snapshot()
@@ -878,17 +1472,6 @@ class TestFanInExecutionSemantics:
             summary="event card ready", score=4, max_score=5, stance=CardStance.BULLISH,
             sentiment="positive", evidence_quality="medium", source_tools=["news_search"],
         )
-        risk_reward_card = RiskRewardCard(
-            card_type="risk_reward", symbol="AAPL", decision_type="entry_decision",
-            summary="risk reward card ready", score=12, max_score=15, stance=CardStance.BULLISH,
-            reward_risk_ratio=2.5, evidence_quality="medium", source_tools=[],
-        )
-
-        base_trace = TradeDecisionSubAgentTrace(
-            sub_agent_name="test", status="completed",
-            started_at=now, finished_at=now, elapsed_ms=50,
-        )
-
         def make_trace(name):
             return TradeDecisionSubAgentTrace(
                 sub_agent_name=name, status="completed",
@@ -896,17 +1479,29 @@ class TestFanInExecutionSemantics:
                 tools_called=["tool"],
             )
 
-        # risk_reward side_effect: assert 4 cards arrive with correct summaries
-        def risk_reward_side_effect(snapshot, account_fit, market_trend, fundamental, event):
-            assert account_fit is not None, "account_fit card is None"
-            assert market_trend is not None, "market_trend card is None"
-            assert fundamental is not None, "fundamental card is None"
-            assert event is not None, "event card is None"
-            assert account_fit.summary == "account fit card ready"
-            assert market_trend.summary == "market trend card ready"
-            assert fundamental.summary == "fundamental card ready"
-            assert event.summary == "event card ready"
-            return risk_reward_card, make_trace("risk_reward")
+        trade_plan_card = TradePlanCard(
+            symbol="AAPL",
+            asset_stance="bullish",
+            portfolio_action="add_on_pullback",
+            action_reason_type="asset_view_and_account_fit",
+            summary="trade plan ready",
+            current_position_pct=0.0,
+            target_position_pct=0.06,
+            adjustment_pct=0.06,
+            suggested_cash_amount=3000.0,
+            max_position_pct=0.08,
+            execution_conditions=["回调后建仓"],
+            invalidation_conditions=["跌破支撑"],
+            recheck_triggers=["回调到计划区域"],
+            risk_reward_assessment={
+                "entry_quality": "medium",
+                "reward_risk_ratio": 2.5,
+                "upside_scenario": "risk reward card ready",
+                "downside_scenario": "跌破支撑后风险扩大",
+                "wait_for_pullback": True,
+            },
+            data_limitations=[],
+        )
 
         with patch(
             "app.services.trade_decision_sub_agents.AccountFitSubAgent.generate",
@@ -922,8 +1517,10 @@ class TestFanInExecutionSemantics:
             return_value=(event_card, make_trace("event_catalyst")),
         ) as evt_gen, patch(
             "app.services.trade_decision_sub_agents.RiskRewardSubAgent.generate",
-            side_effect=risk_reward_side_effect,
-        ) as rr_gen:
+        ) as rr_gen, patch(
+            "app.services.trade_decision_trade_plan_agent.TradeDecisionTradePlanAgent.generate",
+            return_value=(trade_plan_card, make_trace("trade_plan")),
+        ) as plan_gen:
 
             runner = TradeDecisionGraphRunner(
                 account_facts_builder=mock_builder,
@@ -941,7 +1538,8 @@ class TestFanInExecutionSemantics:
         assert mkt_gen.call_count == 1, f"market_trend called {mkt_gen.call_count} times"
         assert fund_gen.call_count == 1, f"fundamental called {fund_gen.call_count} times"
         assert evt_gen.call_count == 1, f"event_catalyst called {evt_gen.call_count} times"
-        assert rr_gen.call_count == 1, f"risk_reward called {rr_gen.call_count} times"
+        assert rr_gen.call_count == 0, "legacy risk_reward node should not run"
+        assert plan_gen.call_count == 1, f"trade_plan called {plan_gen.call_count} times"
 
         # 2. save_decision called twice: once in persist_decision_node, once in _finalize
         assert mock_repo.save_decision.call_count == 2
@@ -953,30 +1551,30 @@ class TestFanInExecutionSemantics:
         assert captured_doc["metadata"]["agent_mode"] == "trade_decision_langgraph_v1"
         assert captured_doc["metadata"]["graph_version"] == "trade_decision_graph_v1"
 
-        # 5. run_trace contains all 9 nodes
+        # 5. run_trace contains graph nodes, but no standalone risk_reward node
         run_trace = captured_doc["run_trace"]
         node_names = [x["node_name"] for x in run_trace]
         expected_nodes = [
             "build_account_facts",
             "account_fit", "market_trend", "fundamental_valuation", "event_catalyst",
-            "risk_reward",
-            "build_card_pack", "compose_decision", "persist_decision",
+            "build_card_pack", "trade_plan", "compose_decision", "persist_decision",
         ]
         for name in expected_nodes:
             assert name in node_names, f"Missing node '{name}' in run_trace"
+        assert "risk_reward" not in node_names
 
-        # 6. risk_reward and persist_decision appear exactly once
-        assert node_names.count("risk_reward") == 1, \
-            f"risk_reward appeared {node_names.count('risk_reward')} times (expected 1)"
+        # 6. trade_plan and persist_decision appear exactly once
+        assert node_names.count("trade_plan") == 1, \
+            f"trade_plan appeared {node_names.count('trade_plan')} times (expected 1)"
         assert node_names.count("persist_decision") == 1, \
             f"persist_decision appeared {node_names.count('persist_decision')} times (expected 1)"
 
-        # 7. risk_reward appears after all 4 parallel cards
-        rr_idx = node_names.index("risk_reward")
+        # 7. build_card_pack appears after all 4 parallel cards
+        pack_idx = node_names.index("build_card_pack")
         for name in ("account_fit", "market_trend", "fundamental_valuation", "event_catalyst"):
             parallel_idx = node_names.index(name)
-            assert parallel_idx < rr_idx, \
-                f"{name} (idx {parallel_idx}) should come before risk_reward (idx {rr_idx})"
+            assert parallel_idx < pack_idx, \
+                f"{name} (idx {parallel_idx}) should come before build_card_pack (idx {pack_idx})"
 
         # 8. card_pack has all 5 cards with correct summaries
         card_pack = captured_doc["card_pack"]
@@ -984,7 +1582,10 @@ class TestFanInExecutionSemantics:
         assert card_pack["market_trend_card"]["summary"] == "market trend card ready"
         assert card_pack["fundamental_valuation_card"]["summary"] == "fundamental card ready"
         assert card_pack["event_catalyst_card"]["summary"] == "event card ready"
-        assert card_pack["risk_reward_card"]["summary"] == "risk reward card ready"
+        assert card_pack["trade_plan_card"]["summary"] == "trade plan ready"
+        assert card_pack["risk_reward_card"]["data_quality"]["source"] == "trade_plan"
+        assert "risk reward card ready" in card_pack["risk_reward_card"]["summary"]
+        assert captured_doc["metadata"]["risk_reward"]["source"] == "trade_plan"
 
     def test_persist_decision_runs_once_and_after_compose(self):
         """persist_decision must run exactly once, after compose_decision."""
@@ -1149,6 +1750,231 @@ class TestFanInExecutionSemantics:
         assert captured_doc.get("fallback_used") is not True
         assert captured_doc.get("fallback_reason") is None
         assert "id" in result
+
+
+class TestUnifiedTradeDecisionEndToEnd:
+    """Smoke tests for the unified `trade_decision` task_type end-to-end.
+
+    These guard against the prod incident where persist_decision crashed
+    inside a try/except whose own except branch double-called
+    finish_node_trace, masking the real ES "1500 fields limit" error.
+    """
+
+    def _build_snapshot(self):
+        return AccountFactSnapshot(
+            decision_type="trade_decision",
+            symbol="AAPL.US",
+            normalized_symbol="AAPL.US",
+            user_question=None,
+            net_liquidation=100000.0,
+            cash=20000.0,
+            deployable_liquidity=20000.0,
+            deployable_liquidity_ratio=0.2,
+            total_position_value=80000.0,
+            top_positions=[],
+            position_concentration=0.0,
+            risk_concentration=0.0,
+            margin_info=None,
+            is_holding=False,
+            quantity=0,
+            avg_cost=0.0,
+            current_price=200.0,
+            market_value=0.0,
+            position_pct=0.0,
+            unrealized_pnl=0.0,
+            unrealized_pnl_pct=0.0,
+            realized_pnl=0.0,
+            recent_trades=[],
+            first_buy_date=None,
+            last_trade_date=None,
+            holding_days=None,
+            latest_review=None,
+            global_mistake_tags=[],
+            data_quality={"account": "ok"},
+        )
+
+    def _patches(self, trade_plan_fails: bool = False):
+        from app.agents.trade_decision_cards import (
+            DebateJudgeCard,
+            DebateRebuttalCard,
+            DebateThesisCard,
+            TradePlanCard,
+        )
+
+        now = "2024-01-01T00:00:00Z"
+
+        def make_trace(name):
+            return TradeDecisionSubAgentTrace(
+                sub_agent_name=name, status="completed",
+                started_at=now, finished_at=now, elapsed_ms=50,
+                tools_called=[],
+            )
+
+        acc = AccountFitCard(
+            card_type="account_fit", symbol="AAPL.US", decision_type="trade_decision",
+            summary="ok", score=16, max_score=20, stance=CardStance.BULLISH,
+            account_fit_level="good", evidence_quality="high", source_tools=[],
+        )
+        mkt = MarketTrendCard(
+            card_type="market_trend", symbol="AAPL.US", decision_type="trade_decision",
+            summary="ok", score=12, max_score=15, stance=CardStance.BULLISH,
+            price_trend="bullish", evidence_quality="medium", source_tools=["quote"],
+        )
+        fund = FundamentalValuationCard(
+            card_type="fundamental_valuation", symbol="AAPL.US", decision_type="trade_decision",
+            summary="ok", score=20, max_score=35, stance=CardStance.BULLISH,
+            pe_ttm=22.0, evidence_quality="medium", source_tools=["company"],
+        )
+        evt = EventCatalystCard(
+            card_type="event_catalyst", symbol="AAPL.US", decision_type="trade_decision",
+            summary="ok", score=4, max_score=5, stance=CardStance.BULLISH,
+            sentiment="positive", evidence_quality="medium", source_tools=["news"],
+        )
+        bull = DebateThesisCard(agent_name="bull", stance="bullish", conviction="medium",
+                                summary="bull case", symbol="AAPL.US", card_type="bull_thesis")
+        bear = DebateThesisCard(agent_name="bear", stance="bearish", conviction="low",
+                                summary="bear case", symbol="AAPL.US", card_type="bear_thesis")
+        bull_r = DebateRebuttalCard(agent_name="bull_r", summary="bull rebuts",
+                                    symbol="AAPL.US", card_type="bull_rebuttal")
+        bear_r = DebateRebuttalCard(agent_name="bear_r", summary="bear rebuts",
+                                    symbol="AAPL.US", card_type="bear_rebuttal")
+        judge = DebateJudgeCard(asset_stance="bullish", conviction="medium", winner="bull",
+                                reasoning_summary="bulls win", symbol="AAPL.US")
+        plan = TradePlanCard(
+            symbol="AAPL.US",
+            asset_stance="bullish",
+            portfolio_action="add_small",
+            action_reason_type="asset_view",
+            summary="plan",
+            current_position_pct=0.0,
+            target_position_pct=0.03,
+            adjustment_pct=0.03,
+            suggested_cash_amount=3000.0,
+            max_position_pct=0.08,
+            execution_conditions=["entry"],
+            invalidation_conditions=["broken"],
+            recheck_triggers=["recheck"],
+            risk_reward_assessment={
+                "entry_quality": "medium",
+                "reward_risk_ratio": 2.0,
+                "upside_scenario": "+15%",
+                "downside_scenario": "-7%",
+                "wait_for_pullback": False,
+                "event_risk_window": "low",
+            },
+            data_limitations=[],
+        )
+
+        def trade_plan_side_effect(*args, **kwargs):
+            if trade_plan_fails:
+                raise RuntimeError("structured_output_failed: simulated provider error")
+            return plan, make_trace("trade_plan")
+
+        return [
+            patch("app.services.trade_decision_sub_agents.AccountFitSubAgent.generate",
+                  return_value=(acc, make_trace("account_fit"))),
+            patch("app.services.trade_decision_sub_agents.MarketTrendSubAgent.generate",
+                  return_value=(mkt, make_trace("market_trend"))),
+            patch("app.services.trade_decision_sub_agents.FundamentalValuationSubAgent.generate",
+                  return_value=(fund, make_trace("fundamental_valuation"))),
+            patch("app.services.trade_decision_sub_agents.EventCatalystSubAgent.generate",
+                  return_value=(evt, make_trace("event_catalyst"))),
+            patch("app.services.trade_decision_debate_agents.BullThesisAgent.generate",
+                  return_value=(bull, make_trace("bull_thesis"))),
+            patch("app.services.trade_decision_debate_agents.BearThesisAgent.generate",
+                  return_value=(bear, make_trace("bear_thesis"))),
+            patch("app.services.trade_decision_debate_agents.BullRebuttalAgent.generate",
+                  return_value=(bull_r, make_trace("bull_rebuttal"))),
+            patch("app.services.trade_decision_debate_agents.BearRebuttalAgent.generate",
+                  return_value=(bear_r, make_trace("bear_rebuttal"))),
+            patch("app.services.trade_decision_debate_agents.DebateJudgeAgent.generate",
+                  return_value=(judge, make_trace("debate_judge"))),
+            patch("app.services.trade_decision_trade_plan_agent.TradeDecisionTradePlanAgent.generate",
+                  side_effect=trade_plan_side_effect),
+        ]
+
+    def _run(self, trade_plan_fails: bool = False, save_raises_first: bool = False):
+        from app.agents.trade_decision_graph.runner import TradeDecisionGraphRunner
+        from contextlib import ExitStack
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = self._build_snapshot()
+        captured = []
+        call_count = {"n": 0}
+
+        def capture_save(doc):
+            call_count["n"] += 1
+            if save_raises_first and call_count["n"] == 1:
+                # Simulate ES "Limit of total fields" on the first persist attempt.
+                raise RuntimeError(
+                    "BadRequestError(400, 'document_parsing_exception', "
+                    "'Limit of total fields [1500] has been exceeded')"
+                )
+            doc.setdefault("id", f"saved-{call_count['n']}")
+            captured.append(dict(doc))
+            return doc
+
+        mock_repo = MagicMock()
+        mock_repo.save_decision.side_effect = capture_save
+        mock_adapter = MagicMock()
+        mock_adapter.client = MagicMock()
+        type(mock_adapter.client).enabled = PropertyMock(return_value=False)
+
+        with ExitStack() as stack:
+            for p in self._patches(trade_plan_fails=trade_plan_fails):
+                stack.enter_context(p)
+            runner = TradeDecisionGraphRunner(
+                account_facts_builder=mock_builder,
+                llm_service=MagicMock(),
+                repository=mock_repo,
+                mcp_adapter=mock_adapter,
+            )
+            return runner.analyze_trade_decision("AAPL"), captured
+
+    def test_unified_trade_decision_task_can_complete_with_fallback_llm(self):
+        doc, captured = self._run()
+        assert doc.get("decision_type") == "trade_decision"
+        assert doc.get("action")
+        assert doc.get("fallback_used") is not True
+        assert doc.get("risk_gate")
+        assert doc.get("trade_plan")
+        assert doc.get("asset_debate")
+        assert doc.get("decision_quality")
+        card_pack = doc.get("card_pack") or {}
+        assert card_pack.get("risk_reward_card")
+        run_trace_nodes = [t.get("node_name") for t in (doc.get("run_trace") or [])]
+        assert "trade_plan" in run_trace_nodes
+        assert "compose_decision" in run_trace_nodes
+        assert "persist_decision" in run_trace_nodes
+        assert "risk_reward" not in run_trace_nodes
+
+    def test_realistic_llm_failure_falls_back_not_task_failed(self):
+        doc, captured = self._run(trade_plan_fails=True)
+        assert doc.get("decision_type") == "trade_decision"
+        assert doc.get("action")
+        run_trace = doc.get("run_trace") or []
+        node_map = {t.get("node_name"): t for t in run_trace}
+        # trade_plan must record its fallback rather than crash the task.
+        trade_plan_trace = node_map.get("trade_plan")
+        assert trade_plan_trace is not None
+        assert trade_plan_trace.get("fallback_used") is True
+        assert trade_plan_trace.get("fallback_reason")
+        # compose / persist still complete.
+        assert node_map.get("compose_decision", {}).get("status") in {"success", "completed"}
+        assert node_map.get("persist_decision", {}).get("status") in {"success", "completed"}
+
+    def test_finish_node_trace_is_idempotent_so_persist_errors_surface(self):
+        """If persist_decision's outer try raises after finish_node_trace was
+        already called once, the except branch must not blow up the trace
+        machinery and replace the real error with a spurious TypeError."""
+        trace = start_node_trace("persist_decision")
+        first = finish_node_trace(trace, "success")
+        # Calling finish_node_trace again on the same dict used to raise
+        # "unsupported operand type(s) for -: 'float' and 'NoneType'".
+        second = finish_node_trace(first, "failed", error="real underlying error")
+        assert second["status"] == "failed"
+        assert second["error"] == "real underlying error"
+        assert isinstance(second["elapsed_ms"], int)
 
 
 def test_trade_decision_uses_all_public_readonly_tools_needed_for_fundamental_analysis():

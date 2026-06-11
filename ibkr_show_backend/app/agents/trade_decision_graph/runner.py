@@ -40,6 +40,7 @@ class TradeDecisionGraphRunner:
         trace_service: Any = None,
         replay_service: Any = None,
         monitoring_service: Any = None,
+        market_event_query_service: Any = None,
     ) -> None:
         self.trace_service = trace_service
         self.replay_service = replay_service
@@ -51,6 +52,7 @@ class TradeDecisionGraphRunner:
             mcp_adapter=mcp_adapter,
             prompt_service=prompt_service,
             monitoring_service=monitoring_service,
+            market_event_query_service=market_event_query_service,
         )
         self.graph = build_trade_decision_graph(self.deps)
 
@@ -61,6 +63,10 @@ class TradeDecisionGraphRunner:
     def analyze_holding(self, symbol: str, question: str | None = None, *, progress_reporter: Any = None) -> dict:
         normalized = normalize_longbridge_symbol(symbol)
         return self._run("holding_decision", normalized, question, progress_reporter=progress_reporter)
+
+    def analyze_trade_decision(self, symbol: str, *, progress_reporter: Any = None) -> dict:
+        normalized = normalize_longbridge_symbol(symbol)
+        return self._run("trade_decision", normalized, None, progress_reporter=progress_reporter)
 
     def _run(self, decision_type: str, symbol: str, question: str | None, *, progress_reporter: Any = None) -> dict:
         # No _deps in state — nodes get deps via closure
@@ -134,6 +140,25 @@ class TradeDecisionGraphRunner:
         metadata["mcp_enabled"] = False
         metadata["mcp_available"] = False
         metadata["longbridge_sdk_configured"] = False
+        quality = {
+            "version": "trade_decision_quality_v1",
+            "score": 0,
+            "level": "poor",
+            "passed": False,
+            "hard_failures": ["graph_failed"],
+            "warnings": [],
+            "flags": ["graph_failed"],
+            "checks": {},
+            "summary": "图运行失败，已生成保守 fallback。",
+            "fallback_used": True,
+            "fallback_reason": reason[:200],
+        }
+        metadata["decision_quality"] = {
+            "version": quality["version"],
+            "score": quality["score"],
+            "level": quality["level"],
+            "passed": quality["passed"],
+        }
 
         document: dict = {
             "decision_type": decision_type,
@@ -172,6 +197,7 @@ class TradeDecisionGraphRunner:
             "fallback_used": True,
             "fallback_reason": reason[:200],
             "llm_error_summary": {},
+            "decision_quality": quality,
             "created_at": now,
             "updated_at": now,
         }

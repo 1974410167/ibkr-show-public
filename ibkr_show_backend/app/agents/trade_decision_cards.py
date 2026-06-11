@@ -409,6 +409,161 @@ class RiskRewardCard(BaseTradeDecisionCard):
 
 
 @dataclass
+class MarketEventContextCard(BaseTradeDecisionCard):
+    """Market-event calendar facts. Stage skeleton uses conservative fallback only."""
+    risk_level: str = "unknown"  # critical | high | medium | low | unknown
+    upcoming_events: list[dict] = field(default_factory=list)
+    macro_events: list[dict] = field(default_factory=list)
+    symbol_events: list[dict] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        base = super().to_dict()
+        base.update({
+            "risk_level": self.risk_level,
+            "upcoming_events": self.upcoming_events,
+            "macro_events": self.macro_events,
+            "symbol_events": self.symbol_events,
+        })
+        return base
+
+
+@dataclass
+class DebateThesisCard:
+    """Bull or bear asset-level thesis. Does not produce portfolio actions."""
+    agent_name: str
+    stance: str
+    conviction: str
+    summary: str
+    symbol: str = ""
+    card_type: str = "debate_thesis"
+    core_claims: list[str] = field(default_factory=list)
+    evidence_refs: list[str] = field(default_factory=list)
+    weak_points: list[str] = field(default_factory=list)
+    risk_flags: list[str] = field(default_factory=list)
+    data_limitations: list[str] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "card_type": self.card_type,
+            "symbol": self.symbol,
+            "agent_name": self.agent_name,
+            "stance": self.stance,
+            "conviction": self.conviction,
+            "summary": self.summary,
+            "core_claims": self.core_claims,
+            "evidence_refs": self.evidence_refs,
+            "weak_points": self.weak_points,
+            "risk_flags": self.risk_flags,
+            "data_limitations": self.data_limitations,
+            "created_at": self.created_at or datetime.now(timezone.utc).isoformat(),
+        }
+
+
+@dataclass
+class DebateRebuttalCard:
+    """Second-round rebuttal card for the bull or bear side."""
+    agent_name: str
+    summary: str
+    symbol: str = ""
+    card_type: str = "debate_rebuttal"
+    accepted_opponent_points: list[str] = field(default_factory=list)
+    rejected_opponent_points: list[str] = field(default_factory=list)
+    reinforced_arguments: list[str] = field(default_factory=list)
+    final_conviction: str = "low"
+    data_limitations: list[str] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "card_type": self.card_type,
+            "symbol": self.symbol,
+            "agent_name": self.agent_name,
+            "summary": self.summary,
+            "accepted_opponent_points": self.accepted_opponent_points,
+            "rejected_opponent_points": self.rejected_opponent_points,
+            "reinforced_arguments": self.reinforced_arguments,
+            "final_conviction": self.final_conviction,
+            "data_limitations": self.data_limitations,
+            "created_at": self.created_at or datetime.now(timezone.utc).isoformat(),
+        }
+
+
+@dataclass
+class DebateJudgeCard:
+    """Asset-level debate judge. Portfolio actions are left to TradePlanCard."""
+    asset_stance: str
+    conviction: str
+    winner: str
+    reasoning_summary: str
+    symbol: str = ""
+    card_type: str = "debate_judge"
+    accepted_bull_points: list[str] = field(default_factory=list)
+    accepted_bear_points: list[str] = field(default_factory=list)
+    key_uncertainties: list[str] = field(default_factory=list)
+    data_limitations: list[str] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "card_type": self.card_type,
+            "symbol": self.symbol,
+            "asset_stance": self.asset_stance,
+            "conviction": self.conviction,
+            "winner": self.winner,
+            "accepted_bull_points": self.accepted_bull_points,
+            "accepted_bear_points": self.accepted_bear_points,
+            "key_uncertainties": self.key_uncertainties,
+            "reasoning_summary": self.reasoning_summary,
+            "data_limitations": self.data_limitations,
+            "created_at": self.created_at or datetime.now(timezone.utc).isoformat(),
+        }
+
+
+@dataclass
+class TradePlanCard:
+    """Draft portfolio action mapping from asset stance to account context."""
+    asset_stance: str
+    portfolio_action: str
+    action_reason_type: str
+    summary: str
+    symbol: str = ""
+    card_type: str = "trade_plan"
+    current_position_pct: float | None = None
+    target_position_pct: float | None = None
+    adjustment_pct: float | None = None
+    suggested_cash_amount: float | None = None
+    max_position_pct: float | None = None
+    execution_conditions: list[str] = field(default_factory=list)
+    invalidation_conditions: list[str] = field(default_factory=list)
+    recheck_triggers: list[str] = field(default_factory=list)
+    risk_reward_assessment: dict = field(default_factory=dict)
+    data_limitations: list[str] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "card_type": self.card_type,
+            "symbol": self.symbol,
+            "asset_stance": self.asset_stance,
+            "portfolio_action": self.portfolio_action,
+            "action_reason_type": self.action_reason_type,
+            "current_position_pct": self.current_position_pct,
+            "target_position_pct": self.target_position_pct,
+            "adjustment_pct": self.adjustment_pct,
+            "suggested_cash_amount": self.suggested_cash_amount,
+            "max_position_pct": self.max_position_pct,
+            "execution_conditions": self.execution_conditions,
+            "invalidation_conditions": self.invalidation_conditions,
+            "recheck_triggers": self.recheck_triggers,
+            "risk_reward_assessment": self.risk_reward_assessment,
+            "data_limitations": self.data_limitations,
+            "summary": self.summary,
+            "created_at": self.created_at or datetime.now(timezone.utc).isoformat(),
+        }
+
+
+@dataclass
 class TradeDecisionCardPack:
     """Container for all sub-agent cards - consumed by Composer."""
     decision_type: str
@@ -418,7 +573,14 @@ class TradeDecisionCardPack:
     market_trend_card: MarketTrendCard | None = None
     fundamental_valuation_card: FundamentalValuationCard | None = None
     event_catalyst_card: EventCatalystCard | None = None
+    market_event_context_card: MarketEventContextCard | None = None
     risk_reward_card: RiskRewardCard | None = None
+    bull_thesis_card: DebateThesisCard | None = None
+    bear_thesis_card: DebateThesisCard | None = None
+    bull_rebuttal_card: DebateRebuttalCard | None = None
+    bear_rebuttal_card: DebateRebuttalCard | None = None
+    debate_judge_card: DebateJudgeCard | None = None
+    trade_plan_card: TradePlanCard | None = None
     data_quality_summary: str = "medium"
     subagent_traces: list[TradeDecisionSubAgentTrace] = field(default_factory=list)
     # Stage 03 - per-symbol investment thesis (code-only, default if missing)
@@ -433,7 +595,14 @@ class TradeDecisionCardPack:
             "market_trend_card": (self.market_trend_card.to_dict() if self.market_trend_card else None),
             "fundamental_valuation_card": (self.fundamental_valuation_card.to_dict() if self.fundamental_valuation_card else None),
             "event_catalyst_card": (self.event_catalyst_card.to_dict() if self.event_catalyst_card else None),
+            "market_event_context_card": (self.market_event_context_card.to_dict() if self.market_event_context_card else None),
             "risk_reward_card": (self.risk_reward_card.to_dict() if self.risk_reward_card else None),
+            "bull_thesis_card": (self.bull_thesis_card.to_dict() if self.bull_thesis_card else None),
+            "bear_thesis_card": (self.bear_thesis_card.to_dict() if self.bear_thesis_card else None),
+            "bull_rebuttal_card": (self.bull_rebuttal_card.to_dict() if self.bull_rebuttal_card else None),
+            "bear_rebuttal_card": (self.bear_rebuttal_card.to_dict() if self.bear_rebuttal_card else None),
+            "debate_judge_card": (self.debate_judge_card.to_dict() if self.debate_judge_card else None),
+            "trade_plan_card": (self.trade_plan_card.to_dict() if self.trade_plan_card else None),
             "data_quality_summary": self.data_quality_summary,
             "subagent_traces": [t.to_dict() if isinstance(t, TradeDecisionSubAgentTrace) else t for t in self.subagent_traces],
             "investment_thesis": self.investment_thesis,
@@ -504,6 +673,29 @@ def build_fallback_event_card(symbol: str, decision_type: str, reason: str) -> E
     )
 
 
+def build_fallback_market_event_context_card(symbol: str, decision_type: str, reason: str) -> MarketEventContextCard:
+    reason_text = reason or "market_event_context_not_wired"
+    return MarketEventContextCard(
+        card_type="market_event_context",
+        symbol=symbol,
+        decision_type=decision_type,
+        summary="重点事件日历尚未接入，暂不作为交易决策依据",
+        score=0,
+        max_score=0,
+        stance=CardStance.INSUFFICIENT_DATA,
+        risk_level="unknown",
+        upcoming_events=[],
+        macro_events=[],
+        symbol_events=[],
+        key_points=[f"fallback_reason: {reason_text}"],
+        risks=[],
+        data_limitations=["market_event_context_not_wired", f"fallback_reason: {reason_text}"],
+        evidence_quality="low",
+        source_tools=[],
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
 def build_fallback_risk_reward_card(symbol: str, decision_type: str, reason: str) -> RiskRewardCard:
     return RiskRewardCard(
         card_type="risk_reward",
@@ -515,6 +707,123 @@ def build_fallback_risk_reward_card(symbol: str, decision_type: str, reason: str
         stance=CardStance.INSUFFICIENT_DATA,
         evidence_quality="low",
         data_limitations=["风险收益数据不足，已保守降低该维度置信度"],
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def build_fallback_debate_thesis_card(symbol: str, agent_name: str, reason: str) -> DebateThesisCard:
+    reason_text = reason or "debate_thesis_agent_not_wired"
+    stance = "bearish" if agent_name == "bear_thesis" else "bullish"
+    side_text = "空头" if stance == "bearish" else "多头"
+    return DebateThesisCard(
+        symbol=symbol,
+        agent_name=agent_name,
+        stance=stance,
+        conviction="low",
+        summary=f"{side_text}立论 Agent 尚未接入，当前仅记录保守 fallback。",
+        core_claims=[],
+        evidence_refs=[],
+        weak_points=[f"fallback_reason: {reason_text}"],
+        risk_flags=[],
+        data_limitations=["debate_thesis_agent_not_wired", f"fallback_reason: {reason_text}"],
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def build_fallback_debate_rebuttal_card(symbol: str, agent_name: str, reason: str) -> DebateRebuttalCard:
+    reason_text = reason or "debate_rebuttal_agent_not_wired"
+    side_text = "多头" if agent_name == "bull_rebuttal" else "空头"
+    return DebateRebuttalCard(
+        symbol=symbol,
+        agent_name=agent_name,
+        summary=f"{side_text}反驳 Agent 尚未接入，当前不改变第一轮观点。",
+        accepted_opponent_points=[],
+        rejected_opponent_points=[],
+        reinforced_arguments=[],
+        final_conviction="low",
+        data_limitations=["debate_rebuttal_agent_not_wired", f"fallback_reason: {reason_text}"],
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def build_fallback_debate_judge_card(symbol: str, reason: str, insufficient_data: bool = False) -> DebateJudgeCard:
+    reason_text = reason or "debate_judge_agent_not_wired"
+    return DebateJudgeCard(
+        symbol=symbol,
+        asset_stance="insufficient_data" if insufficient_data else "neutral",
+        conviction="low",
+        winner="insufficient_data" if insufficient_data else "balanced",
+        accepted_bull_points=[],
+        accepted_bear_points=[],
+        key_uncertainties=[f"fallback_reason: {reason_text}"],
+        reasoning_summary="多空裁判 Agent 尚未接入，暂不形成强方向性标的观点。",
+        data_limitations=["debate_judge_agent_not_wired", f"fallback_reason: {reason_text}"],
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _snapshot_value(snapshot: AccountFactSnapshot | dict | None, *keys: str) -> Any:
+    if snapshot is None:
+        return None
+    if isinstance(snapshot, AccountFactSnapshot):
+        for key in keys:
+            if hasattr(snapshot, key):
+                return getattr(snapshot, key)
+        return None
+    if isinstance(snapshot, dict):
+        for key in keys:
+            if key in snapshot:
+                return snapshot.get(key)
+        position_context = snapshot.get("position_context") or {}
+        account_context = snapshot.get("account_context") or {}
+        for key in keys:
+            if key in position_context:
+                return position_context.get(key)
+            if key in account_context:
+                return account_context.get(key)
+    return None
+
+
+def build_fallback_trade_plan_card(
+    symbol: str,
+    snapshot: AccountFactSnapshot | dict | None,
+    judge_card: DebateJudgeCard | dict | None,
+    reason: str,
+) -> TradePlanCard:
+    reason_text = reason or "trade_plan_agent_not_wired"
+    is_holding = bool(_snapshot_value(snapshot, "is_holding") or False)
+    current_position_pct = _snapshot_value(snapshot, "current_position_pct", "position_pct")
+    if current_position_pct is None:
+        current_position_pct = 0.0
+    try:
+        current_position_pct = float(current_position_pct)
+    except (TypeError, ValueError):
+        current_position_pct = 0.0
+
+    if isinstance(judge_card, DebateJudgeCard):
+        asset_stance = judge_card.asset_stance
+    elif isinstance(judge_card, dict):
+        asset_stance = str(judge_card.get("asset_stance") or "insufficient_data")
+    else:
+        asset_stance = "insufficient_data"
+
+    target_position_pct = current_position_pct if is_holding else 0.0
+    return TradePlanCard(
+        symbol=symbol,
+        asset_stance=asset_stance,
+        portfolio_action="hold_no_add" if is_holding else "watchlist",
+        action_reason_type="skeleton_fallback",
+        current_position_pct=current_position_pct,
+        target_position_pct=target_position_pct,
+        adjustment_pct=target_position_pct - current_position_pct,
+        suggested_cash_amount=0.0,
+        max_position_pct=current_position_pct if is_holding else 0.0,
+        execution_conditions=[],
+        invalidation_conditions=[],
+        recheck_triggers=[],
+        risk_reward_assessment={},
+        data_limitations=["trade_plan_agent_not_wired", f"fallback_reason: {reason_text}"],
+        summary="交易计划 Agent 尚未接入，当前不建议新增资金动作。",
         created_at=datetime.now(timezone.utc).isoformat(),
     )
 

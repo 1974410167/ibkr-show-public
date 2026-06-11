@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.clients.es_client import ESIndexNotFoundError, ElasticsearchClient
 from app.core.config import Settings
 
 TRADE_DECISION_INDEX_BODY = {
-    "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+    "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        # Multi-agent runs accumulate many nested fields (per-node trace, per-card
+        # structured_output, per-tool_call detail). The default 1500 limit was
+        # blowing up persist_decision once debate + trade_plan cards landed.
+        "index.mapping.total_fields.limit": 5000,
+    },
     "mappings": {
         "properties": {
             "id": {"type": "keyword"},
@@ -19,21 +26,36 @@ TRADE_DECISION_INDEX_BODY = {
             "action": {"type": "keyword"},
             "confidence": {"type": "keyword"},
             "decision_summary": {"type": "text"},
-            "score_detail": {"type": "object", "enabled": True},
-            "position_advice": {"type": "object", "enabled": True},
-            "execution_plan": {"type": "object", "enabled": True},
             "key_reasons": {"type": "text"},
             "major_risks": {"type": "text"},
             "review_warnings": {"type": "text"},
             "data_limitations": {"type": "text"},
-            "run_trace": {"type": "object", "enabled": True},
-            "evidence_pack": {"type": "object", "enabled": True},
-            "card_pack": {"type": "object", "enabled": True},
             "raw_llm_response": {"type": "text", "index": False},
-            "model_provider_snapshot": {"type": "object", "enabled": True},
-            "data_source_summary": {"type": "object", "enabled": True},
             "created_at": {"type": "date"},
             "updated_at": {"type": "date"},
+            "fallback_used": {"type": "boolean"},
+            "fallback_reason": {"type": "text", "index": False},
+            # Heavy nested objects are stored as-is in _source but not indexed.
+            # Filtering happens on top-level keyword/date fields above; analytics
+            # reads decision_quality/etc. straight from _source after a search.
+            "score_detail": {"type": "object", "enabled": False},
+            "position_advice": {"type": "object", "enabled": False},
+            "execution_plan": {"type": "object", "enabled": False},
+            "run_trace": {"type": "object", "enabled": False},
+            "run_trace_summary": {"type": "object", "enabled": False},
+            "evidence_pack": {"type": "object", "enabled": False},
+            "evidence_summary": {"type": "object", "enabled": False},
+            "card_pack": {"type": "object", "enabled": False},
+            "model_provider_snapshot": {"type": "object", "enabled": False},
+            "data_source_summary": {"type": "object", "enabled": False},
+            "metadata": {"type": "object", "enabled": False},
+            "decision_quality": {"type": "object", "enabled": False},
+            "asset_debate": {"type": "object", "enabled": False},
+            "trade_plan": {"type": "object", "enabled": False},
+            "risk_gate": {"type": "object", "enabled": False},
+            "llm_error_summary": {"type": "object", "enabled": False},
+            "agent_run_trace": {"type": "object", "enabled": False},
+            "agent_replay": {"type": "object", "enabled": False},
         }
     },
 }
@@ -47,9 +69,29 @@ class TradeDecisionRepository:
     def __init__(self, es_client: ElasticsearchClient, settings: Settings) -> None:
         self.es_client = es_client
         self.settings = settings
+        self._settings_bumped = False
+
+    def _ensure_index(self) -> None:
+        index = self.settings.es_trade_decision_index
+        self.es_client.create_index_if_missing(index, TRADE_DECISION_INDEX_BODY)
+        # The pre-multi-agent index may have been created with the default
+        # 1500-field cap. Once new card_pack + run_trace mappings push past
+        # that limit, persist_decision fails with document_parsing_exception.
+        # Bump the limit on existing indexes so writes survive without a
+        # reindex; the new mapping above already disables auto-indexing for
+        # the heavy nested fields going forward.
+        if not self._settings_bumped:
+            try:
+                self.es_client.put_index_settings(
+                    index,
+                    {"index": {"mapping": {"total_fields": {"limit": 5000}}}},
+                )
+            except Exception:
+                pass
+            self._settings_bumped = True
 
     def save_decision(self, document: dict) -> dict:
-        self.es_client.create_index_if_missing(self.settings.es_trade_decision_index, TRADE_DECISION_INDEX_BODY)
+        self._ensure_index()
         now = utc_now_iso()
         decision_id = document.get("id") or str(uuid4())
         evidence_pack = document.get("evidence_pack")
@@ -84,6 +126,36 @@ class TradeDecisionRepository:
                     "sort": [{"created_at": {"order": "desc"}}],
                     "size": limit,
                     "_source": True,
+                },
+            )
+        except ESIndexNotFoundError:
+            return []
+        return [hit["_source"] for hit in response.get("hits", {}).get("hits", [])]
+
+    def list_recent_decisions_for_quality(self, limit: int = 200, days: int | None = None) -> list[dict]:
+        filters = []
+        if days is not None:
+            since = datetime.now(timezone.utc) - timedelta(days=days)
+            filters.append({"range": {"created_at": {"gte": since.isoformat()}}})
+        try:
+            response = self.es_client.search(
+                index=self.settings.es_trade_decision_index,
+                body={
+                    "query": {"bool": {"filter": filters or [{"match_all": {}}]}},
+                    "sort": [{"created_at": {"order": "desc"}}],
+                    "size": limit,
+                    "_source": [
+                        "id",
+                        "symbol",
+                        "created_at",
+                        "action",
+                        "decision_quality",
+                        "risk_gate",
+                        "trade_plan",
+                        "card_pack",
+                        "run_trace",
+                        "metadata",
+                    ],
                 },
             )
         except ESIndexNotFoundError:

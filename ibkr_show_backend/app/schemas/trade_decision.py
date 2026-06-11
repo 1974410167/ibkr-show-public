@@ -50,6 +50,11 @@ class TradeDecisionAnalyzeEntryRequest(BaseModel):
     force_refresh: bool = False
 
 
+class TradeDecisionAnalyzeAutoRequest(BaseModel):
+    symbol: str
+    force_refresh: bool = False
+
+
 class TradeDecisionScoreItem(BaseModel):
     score: float
     max_score: float
@@ -121,6 +126,10 @@ class TradeDecisionResult(BaseModel):
     evidence_used: list[str]
     data_source_summary: dict
     card_pack: dict = Field(default_factory=dict)
+    asset_debate: dict = Field(default_factory=dict)
+    trade_plan: dict = Field(default_factory=dict)
+    risk_gate: dict = Field(default_factory=dict)
+    decision_quality: dict = Field(default_factory=dict)
     run_trace: list[AgentRunTraceItem] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
     evidence_summary: dict = Field(default_factory=dict)

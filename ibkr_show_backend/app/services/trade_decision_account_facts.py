@@ -48,7 +48,7 @@ class TradeDecisionAccountFactsBuilder:
     def build(self, decision_type: str, symbol: str, user_question: str | None = None) -> AccountFactSnapshot:
         """
         Build a complete AccountFactSnapshot from IBKR data.
-        decision_type: "entry_decision" | "holding_decision"
+        decision_type: "trade_decision" | "entry_decision" | "holding_decision"
         symbol: normalized symbol like "AAPL.US"
         """
         ibkr_symbol = normalize_ibkr_symbol(symbol)
@@ -56,7 +56,8 @@ class TradeDecisionAccountFactsBuilder:
 
         # Fetch all data in parallel where possible
         position = self._fetch_current_position(ibkr_symbol)
-        trades = self._fetch_symbol_trades(ibkr_symbol, limit=50 if decision_type == "holding_decision" else 20)
+        trade_limit = 50 if decision_type in {"trade_decision", "holding_decision"} else 20
+        trades = self._fetch_symbol_trades(ibkr_symbol, limit=trade_limit)
         account_context = self._build_account_context()
         position_context = self._build_position_context(position)
         trade_history_context = self._build_trade_history_context(trades)

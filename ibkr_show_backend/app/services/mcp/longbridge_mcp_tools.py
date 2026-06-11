@@ -314,6 +314,46 @@ def _build_tool_diagnostics(
     }
 
 
+def _normalize_candle_items(raw: Any) -> list[dict[str, Any]]:
+    """Return compact OHLCV rows for deterministic engines, not for LLM prompts."""
+    items = raw
+    if isinstance(raw, dict):
+        items = raw.get("items") or raw.get("candles") or raw.get("data") or []
+    if not isinstance(items, list):
+        return []
+
+    candles: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        close = item.get("close") if item.get("close") is not None else item.get("c")
+        if close is None:
+            continue
+        candle = {
+            "timestamp": item.get("timestamp") or item.get("date") or item.get("time"),
+            "open": item.get("open") if item.get("open") is not None else item.get("o"),
+            "high": item.get("high") if item.get("high") is not None else item.get("h"),
+            "low": item.get("low") if item.get("low") is not None else item.get("l"),
+            "close": close,
+            "volume": item.get("volume") if item.get("volume") is not None else item.get("v"),
+        }
+        candles.append({key: value for key, value in candle.items() if value is not None})
+    return candles
+
+
+def _build_engine_payload(tool_name: str, raw_data: Any, *, symbol: str | None = None) -> dict[str, Any] | None:
+    if tool_name not in {"candlesticks", "history_candlesticks"}:
+        return None
+    candles = _normalize_candle_items(raw_data)
+    if not candles:
+        return None
+    return {
+        "kind": "ohlcv_candles",
+        "symbol": symbol,
+        "candles": candles,
+    }
+
+
 class LongbridgeMCPToolAdapter:
     """
     Adapter for Longbridge MCP calls.
@@ -465,6 +505,7 @@ class LongbridgeMCPToolAdapter:
         if raw_result.get("ok"):
             raw_data = raw_result.get("data")
             compact_data = _compact_tool_output(tool_name, raw_data)
+            engine_payload = _build_engine_payload(tool_name, raw_data, symbol=mcp_arguments.get("symbol"))
             logger.info(
                 "MCP tool %s: ok=True, raw_type=%s, raw_keys=%s, compact_keys=%s",
                 tool_name,
@@ -488,6 +529,7 @@ class LongbridgeMCPToolAdapter:
                     raw_data=raw_data,
                     parsed_data=compact_data,
                 ),
+                **({"engine_payload": engine_payload} if engine_payload else {}),
             }
         else:
             logger.warning(
