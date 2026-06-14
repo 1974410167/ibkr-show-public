@@ -297,16 +297,25 @@ class SymbolAnalysisService:
         )
 
     def compare(self, left_symbol: str, right_symbol: str, periods: int = 8, report: str = "qf") -> SymbolComparisonResponse:
-        left = self.get_financials(left_symbol, periods=periods, report=report)
-        right = self.get_financials(right_symbol, periods=periods, report=report)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            left_future = executor.submit(self.get_financials, left_symbol, periods=periods, report=report)
+            right_future = executor.submit(self.get_financials, right_symbol, periods=periods, report=report)
+            left = left_future.result()
+            right = right_future.result()
         return SymbolComparisonResponse(
             left=left,
             right=right,
             latest_metric_comparison=self._compare_latest_metrics(left, right),
         )
 
-    def generate_ai_advice(self, left_symbol: str, right_symbol: str, question: str | None = None) -> SymbolAiAdviceResponse:
-        comparison = self.compare(left_symbol, right_symbol)
+    def generate_ai_advice(
+        self,
+        left_symbol: str,
+        right_symbol: str,
+        question: str | None = None,
+        comparison: SymbolComparisonResponse | None = None,
+    ) -> SymbolAiAdviceResponse:
+        comparison = comparison or self.compare(left_symbol, right_symbol)
         prompt_payload = self._build_ai_payload(comparison)
         min_period_count = min(comparison.left.period_count, comparison.right.period_count)
         prompt = (

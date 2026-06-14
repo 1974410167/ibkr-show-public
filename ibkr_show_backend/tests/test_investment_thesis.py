@@ -256,6 +256,44 @@ def test_thesis_max_position_pct_enters_position_advice():
     assert max_pct <= 0.28
 
 
+def test_user_investment_policy_summary_does_not_override_position_advice():
+    snapshot = _make_snapshot("AMD", is_holding=True, position_pct=0.04)
+    pack = _make_card_pack(snapshot)
+    pack.user_investment_policy = {
+        "source": "user_config",
+        "symbol": "AMD",
+        "user_investment_preference": {
+            "asset_role": "core_growth",
+            "conviction": "high",
+            "user_preferred_min_position_pct": 0.0,
+            "user_preferred_target_position_pct": 0.50,
+            "user_preferred_max_position_pct": 0.90,
+            "add_rules": ["user wants a large position"],
+            "no_add_triggers": [],
+            "sell_triggers": [],
+            "hard_constraints": [],
+            "soft_preferences": [],
+            "notes": "user preference only",
+            "enabled": True,
+            "ai_review_status": "unknown",
+            "ai_review_summary": None,
+        },
+    }
+
+    output = TradeDecisionComposer().compose(pack)
+
+    summary = output["user_investment_policy_summary"]
+    assert summary["source"] == "user_config"
+    assert summary["user_preferred_max_position_pct"] == 0.90
+    assert summary["gap_to_user_preferred_target_pct"] == 0.46
+    assert output["ai_policy_assessment"]["status"] == "not_evaluated"
+    assert output["ai_policy_assessment"]["ai_position_stance"] is None
+    # User preference is display/context only. The old thesis/risk path still
+    # controls final position_advice, so the user's 90% preference must not
+    # become the max_position_pct.
+    assert output["position_advice"]["max_position_pct"] != 0.90
+
+
 # === Risk Gate uses thesis ===
 
 def test_risk_gate_blocks_add_when_over_thesis_max():

@@ -165,6 +165,18 @@ class RiskGate:
         max_pct = _safe_float(position_advice.get("max_position_pct"))
         current_pct = _safe_float(position_advice.get("current_position_pct"))
         suggested_target_pct = _safe_float(position_advice.get("suggested_target_position_pct"))
+        ai_policy = _dict(getattr(card_pack, "ai_policy_assessment", None))
+        ai_status = str(ai_policy.get("status") or "")
+        ai_max_pct = _safe_float(ai_policy.get("ai_recommended_max_position_pct")) if ai_status == "evaluated" else None
+        ai_target_range = ai_policy.get("ai_recommended_target_position_range_pct") if ai_status == "evaluated" else None
+        ai_position_stance = str(ai_policy.get("ai_position_stance") or "") if ai_status == "evaluated" else None
+        ai_action_bias = str(ai_policy.get("recommended_action_bias") or "") if ai_status == "evaluated" else None
+        ai_supports_pullback_add = _ai_supports_pullback_add(ai_status, ai_position_stance, ai_action_bias)
+        if ai_status == "evaluated":
+            constraints["ai_recommended_max_position_pct"] = ai_max_pct
+            constraints["ai_recommended_target_position_range_pct"] = ai_target_range
+            constraints["ai_position_stance"] = ai_position_stance
+            constraints["ai_recommended_action_bias"] = ai_action_bias
 
         execution_plan = decision_output.get("execution_plan") or {}
         invalid_conditions = list(execution_plan.get("invalid_conditions") or [])
@@ -211,7 +223,7 @@ class RiskGate:
             constraints["required"] = list(set(constraints.get("required", []) + ["invalid_conditions"]))
 
         # -- 3. Data insufficiency forces confidence<=medium and removes add.
-        insufficient_data = public_fallback_count >= 2 or _low_quality_evidence(rr) or _low_quality_evidence(mkt) or _low_quality_evidence(fund)
+        insufficient_data = public_fallback_count >= 2
         if insufficient_data:
             if final_action in ADD_LIKE_ACTIONS:
                 final_action = _downgrade_to_hold_no_add(final_action, snapshot)
@@ -235,10 +247,25 @@ class RiskGate:
             and trend_for_weak == "none"
             and fund_for_weak in {"green", "yellow"}
         )
+        weak_pullback_allowed = (
+            final_action == "add_on_pullback"
+            and ai_supports_pullback_add
+            and (rr_ratio_for_weak is None or rr_ratio_for_weak >= 1.5)
+            and trend_for_weak in {"none", "warning", "unknown"}
+            and fund_for_weak in {"green", "yellow", "unknown"}
+        )
         if final_action in ADD_LIKE_ACTIONS and weak_catalyst and not weak_right_side_allowed:
-            final_action = "wait" if not _is_holding(snapshot) else "hold_no_add"
-            reasons.append("催化偏弱，加仓已降级为回调加仓或暂不加仓")
-            flags.append("weak_catalyst_downgrade")
+            if weak_pullback_allowed:
+                reasons.append("催化偏弱，但 AI 支持回调加仓，保留 add_on_pullback 并要求条件触发")
+                flags.append("weak_catalyst_soft_warning")
+            elif final_action in {"add", "add_batch", "add_right_side", "add_small"} and ai_supports_pullback_add and (rr_ratio_for_weak is None or rr_ratio_for_weak >= 1.5):
+                final_action = "add_on_pullback"
+                reasons.append("催化偏弱，强加仓已降级为回调加仓")
+                flags.append("weak_catalyst_downgrade_to_pullback")
+            else:
+                final_action = "wait" if not _is_holding(snapshot) else "hold_no_add"
+                reasons.append("催化偏弱，加仓已降级为回调加仓或暂不加仓")
+                flags.append("weak_catalyst_downgrade")
         elif weak_catalyst and original_action in ADD_LIKE_ACTIONS and not weak_right_side_allowed:
             reasons.append("催化偏弱，不构成独立加仓理由")
             flags.append("weak_catalyst_downgrade")
@@ -251,6 +278,25 @@ class RiskGate:
                 final_action = "hold_no_add"
                 reasons.append("已达仓位上限或账户适配度低，禁止继续加仓")
                 flags.append("position_limit_reached")
+
+        # -- 5b. AI policy assessment is an additional soft constraint, never
+        # a Risk Gate bypass. It can downgrade add-like actions when the draft
+        # target or current position exceeds AI's independently assessed max.
+        if ai_status == "evaluated":
+            if ai_action_bias in {"hold_no_add", "avoid", "prefer_reduce"} and final_action in ADD_LIKE_ACTIONS:
+                final_action = _downgrade_to_hold_no_add(final_action, snapshot)
+                reasons.append(f"AI 仓位评估动作为 {ai_action_bias}，禁止加仓")
+                flags.append("ai_policy_bias_blocks_add")
+            if ai_max_pct is not None and ai_max_pct > 0:
+                ai_limit_hit = current_pct is not None and current_pct >= ai_max_pct
+                ai_target_above = suggested_target_pct is not None and suggested_target_pct > ai_max_pct + 1e-6
+                if final_action in ADD_LIKE_ACTIONS and (ai_limit_hit or ai_target_above):
+                    final_action = _downgrade_to_hold_no_add(final_action, snapshot)
+                    reasons.append("目标仓位超过 AI 独立评估最大仓位，已降级")
+                    flags.append("ai_policy_max_position_downgrade")
+                if ai_target_above:
+                    flags.append("target_above_ai_policy_max")
+                    constraints["suggested_target_position_pct"] = round(min(suggested_target_pct, ai_max_pct), 6)
 
         # -- 6. Technical trend-break level (Stage 02) gates the action directly.
         #    severe  => no add;  broken => only hold_no_add / wait / trim_on_rebound;
@@ -269,7 +315,10 @@ class RiskGate:
             flags.append("trend_break_broken_blocked")
         if trend_break_level == "warning" and (final_action in {"add", "add_batch", "add_right_side"} or original_action in {"add", "add_batch", "add_right_side"}):
             if final_action in {"add", "add_batch", "add_right_side"}:
-                final_action = "add_on_pullback" if not _is_holding(snapshot) else "hold_no_add"
+                if ai_supports_pullback_add and _fundamental_status_not_bad(card_pack) and _rr_allows_pullback(rr):
+                    final_action = "add_on_pullback"
+                else:
+                    final_action = "add_on_pullback" if not _is_holding(snapshot) else "hold_no_add"
             reasons.append("技术面 trend break warning，禁止追涨加仓")
             flags.append("trend_break_warning_downgrade")
 
@@ -367,7 +416,10 @@ class RiskGate:
 
         # 6c.3 - yellow => ban strong add_batch
         if fundamental_status == "yellow" and final_action in {"add", "add_batch", "add_right_side"}:
-            final_action = "add_on_pullback" if not _is_holding(snapshot) else "hold_no_add"
+            if ai_supports_pullback_add and _rr_allows_pullback(rr):
+                final_action = "add_on_pullback"
+            else:
+                final_action = "add_on_pullback" if not _is_holding(snapshot) else "hold_no_add"
             reasons.append("基本面 yellow，禁止强加仓")
             flags.append("fundamental_yellow_downgrade")
 
@@ -423,6 +475,7 @@ class RiskGate:
             risk_flags=flags,
             action_constraints={
                 **constraints,
+                "max_position_pct": max_pct,
                 "snapshot": {
                     "current_position_pct": current_pct,
                     "max_position_pct": max_pct,
@@ -591,6 +644,28 @@ def _safe_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return f
+
+
+def _ai_supports_pullback_add(ai_status: str, ai_position_stance: str | None, ai_action_bias: str | None) -> bool:
+    return (
+        ai_status == "evaluated"
+        and ai_position_stance in {"underweight", "no_position"}
+        and ai_action_bias in {"allow_add", "prefer_pullback_add"}
+    )
+
+
+def _fundamental_status_not_bad(card_pack: TradeDecisionCardPack) -> bool:
+    status = _get_fundamental_status(card_pack.fundamental_valuation_card)
+    return status not in {"red", "orange"}
+
+
+def _rr_allows_pullback(rr: RiskRewardCard | None) -> bool:
+    ratio = _safe_float(getattr(rr, "reward_risk_ratio", None)) if rr else None
+    return ratio is None or ratio >= 1.5
+
+
+def _dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
 
 
 def _downgrade_to_hold_no_add(original_action: str, snapshot: AccountFactSnapshot) -> str:

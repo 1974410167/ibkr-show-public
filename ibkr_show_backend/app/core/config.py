@@ -39,6 +39,7 @@ class Settings:
     es_price_history_index: str
     es_trade_review_index: str
     es_trade_decision_index: str
+    es_investment_policy_index: str
     es_daily_position_review_index: str
     es_agent_task_index: str
     es_agent_prompt_index: str
@@ -124,6 +125,7 @@ def get_settings() -> Settings:
         es_price_history_index=os.getenv("ES_PRICE_HISTORY_INDEX", "ibkr_symbol_price_history_v1"),
         es_trade_review_index=os.getenv("ES_TRADE_REVIEW_INDEX", "ibkr_trade_reviews_v1"),
         es_trade_decision_index=os.getenv("ES_TRADE_DECISION_INDEX", "ibkr_trade_decisions_v1"),
+        es_investment_policy_index=os.getenv("ES_INVESTMENT_POLICY_INDEX", "ibkr_investment_policy_v1"),
         es_daily_position_review_index=os.getenv("ES_DAILY_POSITION_REVIEW_INDEX", "ibkr_daily_position_reviews_v1"),
         es_agent_task_index=os.getenv("ES_AGENT_TASK_INDEX", "ibkr_agent_tasks_v1"),
         es_agent_prompt_index=os.getenv("ES_AGENT_PROMPT_INDEX", "ibkr_agent_prompts"),

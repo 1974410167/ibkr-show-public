@@ -243,6 +243,7 @@ class TradeDecisionComposer:
 
         user_question = getattr(card_pack.account_fact_snapshot, "user_question", None)
         action_before_risk_gate = output.get("action")
+        output["draft_action"] = action_before_risk_gate
         try:
             output, gate_result = apply_risk_gate(output, card_pack, user_question=user_question)
         except Exception as gate_exc:
@@ -356,6 +357,8 @@ class TradeDecisionComposer:
                 # Fall through; the gate has already attached its block.
                 pass
 
+        _attach_action_calibration(output, gate_result)
+
         # Build thesis_constraints AFTER position_advice is final, so the
         # constraints reflect the same max_position_pct the gate saw.
         output["thesis_constraints"] = _build_thesis_constraints(
@@ -372,6 +375,8 @@ class TradeDecisionComposer:
         # replay, and frontend code can inspect without reverse-engineering
         # risk_gate + execution_plan + cards.
         output["risk_control"] = _build_risk_control_block(output, card_pack)
+        output["user_investment_policy_summary"] = _build_user_investment_policy_summary(output, card_pack)
+        output["ai_policy_assessment"] = _resolve_ai_policy_assessment(card_pack)
         self._apply_weak_catalyst_language(output, card_pack)
 
         return output
@@ -1116,14 +1121,43 @@ class TradeDecisionComposer:
         output: dict[str, Any],
         card_pack: TradeDecisionCardPack,
     ) -> None:
-        """Override position_advice.max_position_pct and suggested_target with
-        the thesis values. The Risk Gate still applies its own structural
-        checks on top of these values.
+        """Apply an AI-assessed max/target before falling back to legacy thesis.
+
+        The Risk Gate still applies its deterministic checks on top of these
+        values. User preference fields are not treated as hard caps; the AI
+        assessment wins when it completed successfully.
 
         We only apply the override when the action is add-like (or hold with
         a position). For wait / avoid / watchlist (no add), the original
         zero-target behavior is preserved.
         """
+        final_action = str(output.get("action") or "")
+        # For non-add actions we keep the original "0 target" semantics
+        # so the wait/avoid/watchlist flows still mean "no entry".
+        add_like = {
+            "add", "add_small", "add_batch", "add_on_pullback",
+            "add_right_side", "hold", "hold_no_add", "reduce",
+            "reduce_now", "reduce_batch", "trim_on_rebound",
+            "sell", "sell_thesis_broken",
+        }
+        if final_action not in add_like:
+            return
+
+        position_advice = output.get("position_advice") or {}
+        ai_assessment = _resolve_ai_policy_assessment(card_pack)
+        ai_max = _to_float(ai_assessment.get("ai_recommended_max_position_pct"))
+        ai_target = _to_float(ai_assessment.get("ai_recommended_target_position_pct"))
+        if ai_assessment.get("status") == "evaluated" and ai_max is not None and ai_max > 0:
+            position_advice["max_position_pct"] = round(ai_max, 6)
+            try:
+                current_target_for_ai = float(position_advice.get("suggested_target_position_pct") or 0)
+            except (TypeError, ValueError):
+                current_target_for_ai = 0.0
+            if ai_target is not None and ai_target > 0 and current_target_for_ai > 0:
+                position_advice["suggested_target_position_pct"] = round(min(ai_target, ai_max), 6)
+            output["position_advice"] = position_advice
+            return
+
         thesis = card_pack.investment_thesis or {}
         if not isinstance(thesis, dict) or not thesis:
             return
@@ -1140,28 +1174,13 @@ class TradeDecisionComposer:
         if thesis_max <= 0:
             return
 
-        final_action = str(output.get("action") or "")
-        # For non-add actions we keep the original "0 target" semantics
-        # so the wait/avoid/watchlist flows still mean "no entry".
-        add_like = {
-            "add", "add_small", "add_batch", "add_on_pullback",
-            "add_right_side", "hold", "hold_no_add", "reduce",
-            "reduce_now", "reduce_batch", "trim_on_rebound",
-            "sell", "sell_thesis_broken",
-        }
-        if final_action not in add_like:
-            return
-
-        position_advice = output.get("position_advice") or {}
         current_max = position_advice.get("max_position_pct")
         try:
             current_max_f = float(current_max) if current_max is not None else 0.0
         except (TypeError, ValueError):
             current_max_f = 0.0
-        # P3 - thesis.max_position_pct is the per-symbol authoritative
-        # budget. When the thesis is configured with a positive max, we
-        # always use it (whether the current value is smaller or larger),
-        # so the Risk Gate and the final position_advice stay in sync.
+        # Legacy fallback: if AI policy assessment is unavailable, keep the
+        # existing per-symbol thesis budget behavior for backward compatibility.
         if current_max_f <= 0 or thesis_max != current_max_f:
             position_advice["max_position_pct"] = round(thesis_max, 6)
 
@@ -1231,6 +1250,116 @@ def _build_thesis_constraints(
         "headroom_pct": headroom,
         "role": role,
         "review_frequency": (thesis or {}).get("review_frequency") or "unknown",
+    }
+
+
+def _default_ai_policy_assessment() -> dict[str, Any]:
+    return {
+        "status": "not_evaluated",
+        "ai_assessed_asset_role": None,
+        "ai_role_confidence": "low",
+        "ai_recommended_min_position_pct": None,
+        "ai_recommended_target_position_pct": None,
+        "ai_recommended_target_position_range_pct": None,
+        "ai_recommended_max_position_pct": None,
+        "current_position_pct": None,
+        "gap_to_ai_target_pct": None,
+        "gap_to_ai_max_pct": None,
+        "ai_position_stance": None,
+        "challenge_level": "not_evaluated",
+        "challenge_reason": None,
+        "preference_alignment_summary": "",
+        "recommended_action_bias": "unknown",
+        "risk_budget": {"estimated_downside_pct": None, "max_account_loss_pct": None, "reason": "not_evaluated"},
+        "key_reasons": [],
+        "key_risks": [],
+        "data_limitations": [],
+        "prompt_key": "trade_decision_ai_policy_assessment",
+        "prompt_source": "default_fallback",
+    }
+
+
+def _attach_action_calibration(output: dict[str, Any], gate_result: Any | None) -> None:
+    draft_action = str(output.get("draft_action") or _dict_local(output.get("trade_plan")).get("portfolio_action") or output.get("action") or "")
+    risk_adjusted = str(output.get("action") or draft_action)
+    output["draft_action"] = draft_action
+    output["risk_adjusted_action"] = risk_adjusted
+    output["final_action"] = risk_adjusted
+    chain: list[dict[str, Any]] = []
+    if gate_result is not None and draft_action and draft_action != risk_adjusted:
+        reasons = list(getattr(gate_result, "gate_reasons", []) or [])
+        reason = reasons[0] if reasons else "Risk Gate adjusted the trade plan action"
+        chain.append({
+            "from": draft_action,
+            "to": risk_adjusted,
+            "by": "risk_gate",
+            "reason": reason,
+        })
+    output["action_change_reason"] = chain[0]["reason"] if chain else None
+    output["action_downgrade_chain"] = chain
+
+
+def _resolve_ai_policy_assessment(card_pack: TradeDecisionCardPack) -> dict[str, Any]:
+    assessment = getattr(card_pack, "ai_policy_assessment", None)
+    if isinstance(assessment, dict) and assessment:
+        return assessment
+    return _default_ai_policy_assessment()
+
+
+def _as_string_list(value: Any, limit: int = 20) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()][:limit]
+
+
+def _build_user_investment_policy_summary(output: dict[str, Any], card_pack: TradeDecisionCardPack) -> dict[str, Any] | None:
+    policy = card_pack.user_investment_policy or {}
+    if not isinstance(policy, dict) or not policy:
+        return None
+    preference = policy.get("user_investment_preference")
+    if not isinstance(preference, dict):
+        preference = policy
+
+    position_advice = output.get("position_advice") if isinstance(output.get("position_advice"), dict) else {}
+    current_pct = _to_float(position_advice.get("current_position_pct"))
+    if current_pct is None:
+        current_pct = _to_float(getattr(card_pack.account_fact_snapshot, "position_pct", None)) or 0.0
+    target_pct = _to_float(preference.get("user_preferred_target_position_pct"))
+    max_pct = _to_float(preference.get("user_preferred_max_position_pct"))
+    min_pct = _to_float(preference.get("user_preferred_min_position_pct"))
+
+    gap_to_target = round(target_pct - current_pct, 6) if target_pct is not None else None
+    gap_to_max = round(max_pct - current_pct, 6) if max_pct is not None else None
+    if gap_to_target is None:
+        gap_label = "unknown"
+    elif gap_to_target > 0.01:
+        gap_label = "below_user_preference"
+    elif gap_to_target < -0.01:
+        gap_label = "above_user_preference"
+    else:
+        gap_label = "near_user_preference"
+
+    return {
+        "source": policy.get("source") or "fallback",
+        "asset_role": preference.get("asset_role") or policy.get("role") or "unknown",
+        "conviction": preference.get("conviction") or policy.get("risk_class") or "low",
+        "user_preferred_min_position_pct": min_pct,
+        "user_preferred_target_position_pct": target_pct,
+        "user_preferred_max_position_pct": max_pct,
+        "current_position_pct": current_pct,
+        "gap_to_user_preferred_target_pct": gap_to_target,
+        "gap_to_user_preferred_max_pct": gap_to_max,
+        "user_preference_gap_label": gap_label,
+        "enabled": bool(preference.get("enabled", True)),
+        "add_rules": _as_string_list(preference.get("add_rules")),
+        "no_add_triggers": _as_string_list(preference.get("no_add_triggers")),
+        "sell_triggers": _as_string_list(preference.get("sell_triggers")),
+        "hard_constraints": _as_string_list(preference.get("hard_constraints")),
+        "soft_preferences": _as_string_list(preference.get("soft_preferences")),
+        "notes": str(preference.get("notes") or ""),
+        "ai_review_status": preference.get("ai_review_status") or "unknown",
+        "ai_review_summary": preference.get("ai_review_summary"),
+        "disclaimer": "这是用户主观偏好，不是 AI 最终仓位建议",
     }
 
 
@@ -1323,6 +1452,10 @@ def _safe_float_local(value: Any) -> float | None:
 
 def _to_float(value: Any) -> float | None:
     return _safe_float_local(value)
+
+
+def _dict_local(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _position_size_label(current_pct: float | None, target_pct: float | None) -> str:

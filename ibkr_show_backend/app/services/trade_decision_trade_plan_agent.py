@@ -12,9 +12,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.agents.graph.node_utils import strip_thinking_tags
+from app.agents.prompt_runtime import resolve_runtime_prompt
 from app.agents.structured_output import StructuredOutputRuntime
 from app.agents.trade_decision_cards import (
     AccountFactSnapshot,
+    CardStance,
     DebateJudgeCard,
     TradeDecisionCardPack,
     TradeDecisionSubAgentTrace,
@@ -68,13 +70,16 @@ class TradeDecisionTradePlanAgent:
         self,
         llm_service: Any,
         monitoring_service: Any | None = None,
+        prompt_service: Any | None = None,
         run_id: str | None = None,
         task_id: str | None = None,
     ) -> None:
         self.llm_service = llm_service
         self.monitoring_service = monitoring_service
+        self.prompt_service = prompt_service
         self.run_id = run_id
         self.task_id = task_id
+        self._last_prompt_metadata: dict[str, Any] | None = None
         self.runtime = StructuredOutputRuntime(
             llm_service,
             monitoring_service=monitoring_service,
@@ -89,8 +94,9 @@ class TradeDecisionTradePlanAgent:
     ) -> tuple[TradePlanCard, TradeDecisionSubAgentTrace]:
         context = self._build_context(card_pack, debate_judge_card)
         contract = build_trade_plan_contract()
+        system_prompt = self._resolve_system_prompt()
         result = self.runtime.generate(
-            self._messages(TRADE_PLAN_PROMPT, context),
+            self._messages(system_prompt, context),
             contract,
             temperature=0.0,
             max_tokens=self.max_tokens,
@@ -137,6 +143,7 @@ class TradeDecisionTradePlanAgent:
             "symbol": card_pack.symbol,
             "decision_type": card_pack.decision_type,
             "asset_debate": _compact_value(_card_dict(debate_judge_card) or {}),
+            "ai_policy_assessment": _compact_value(card_pack.ai_policy_assessment or {}),
             "account": _compact_value(account),
             "evidence_cards": {
                 "account_fit_card": _compact_card(card_pack.account_fit_card),
@@ -178,6 +185,36 @@ class TradeDecisionTradePlanAgent:
         if target_pct > max_pct:
             target_pct = max_pct
             notes.append("target_position_pct_truncated_to_max_position_pct")
+
+        ai_assessment = card_pack.ai_policy_assessment or {}
+        ai_bias = str(ai_assessment.get("recommended_action_bias") or "").lower()
+        ai_stance = str(ai_assessment.get("ai_position_stance") or "").lower()
+        ai_target = _to_float(ai_assessment.get("ai_recommended_target_position_pct"), None)
+        ai_range = ai_assessment.get("ai_recommended_target_position_range_pct")
+        if portfolio_action in ADD_ACTIONS and ai_stance in {"overweight", "over_limit", "forbidden"}:
+            portfolio_action = "hold_no_add" if is_holding else "watchlist"
+            target_pct = current_pct if is_holding else 0.0
+            reason_type = "portfolio_risk_constraint"
+            notes.append(f"ai_policy_stance_{ai_stance}_downgraded_add")
+        if portfolio_action in ADD_ACTIONS and ai_bias in {"hold_no_add", "avoid", "prefer_reduce"}:
+            portfolio_action = "hold_no_add" if is_holding else "watchlist"
+            target_pct = current_pct if is_holding else 0.0
+            reason_type = "portfolio_risk_constraint"
+            notes.append(f"ai_policy_bias_{ai_bias}_downgraded_add")
+        elif portfolio_action in {"add", "add_batch", "add_right_side"} and ai_bias == "prefer_pullback_add":
+            portfolio_action = "add_on_pullback"
+            notes.append("ai_policy_bias_prefer_pullback_add_downgraded_strong_add")
+
+        ai_supports_add = _ai_policy_supports_add(ai_assessment, current_pct) and _evidence_allows_ai_add(card_pack, asset_stance)
+        if portfolio_action in PASSIVE_ACTIONS and ai_supports_add:
+            portfolio_action = "add_on_pullback" if ai_bias == "prefer_pullback_add" else "add_small"
+            reason_type = "asset_view_and_account_fit"
+            notes.append("ai_policy_underweight_supports_action_promoted_from_hold_like")
+        if portfolio_action in ADD_ACTIONS and ai_supports_add:
+            calibrated_target = _ai_calibrated_target(current_pct, max_pct, ai_target, ai_range)
+            if calibrated_target is not None and calibrated_target > target_pct:
+                target_pct = calibrated_target
+                notes.append("target_position_pct_aligned_to_ai_policy_range")
 
         if not is_holding and portfolio_action in REDUCE_ACTIONS | SELL_ACTIONS:
             portfolio_action = "avoid" if asset_stance == "bearish" else "watchlist"
@@ -233,10 +270,18 @@ class TradeDecisionTradePlanAgent:
         )
 
     def _resolve_max_position_pct(self, card_pack: TradeDecisionCardPack, current_pct: float, is_holding: bool) -> float:
-        acc_max = _to_float(getattr(card_pack.account_fit_card, "max_suggested_position_pct", None), None)
+        ai_assessment = card_pack.ai_policy_assessment or {}
+        ai_status = str(ai_assessment.get("status") or "")
+        ai_max = _to_float(ai_assessment.get("ai_recommended_max_position_pct"), None)
+        if ai_status == "evaluated" and ai_max is not None and ai_max >= 0:
+            return ai_max
         thesis = card_pack.investment_thesis or {}
+        thesis_role = str(thesis.get("role") or "unknown") if isinstance(thesis, dict) else "unknown"
         thesis_max = _to_float(thesis.get("max_position_pct") if isinstance(thesis, dict) else None, None)
-        for value in (acc_max, thesis_max):
+        if thesis_role != "unknown" and thesis_max is not None and thesis_max >= 0:
+            return thesis_max
+        acc_max = _to_float(getattr(card_pack.account_fit_card, "max_suggested_position_pct", None), None)
+        for value in (acc_max,):
             if value is not None and value >= 0:
                 return value
         return current_pct if is_holding else 0.0
@@ -280,6 +325,7 @@ class TradeDecisionTradePlanAgent:
         llm_meta = ((result.metadata or {}).get("llm_call_metadata") if result is not None else {}) or {}
         token_usage = llm_meta.get("token_usage") if isinstance(llm_meta, dict) else {}
         prompt_metadata = {
+            **(self._last_prompt_metadata or {}),
             "contract_name": "trade_decision_trade_plan",
             "context_card_count": sum(1 for value in (context.get("evidence_cards") or {}).values() if value),
             "asset_stance": card.asset_stance if card else (context.get("asset_debate") or {}).get("asset_stance"),
@@ -310,6 +356,15 @@ class TradeDecisionTradePlanAgent:
             {"role": "user", "content": json.dumps(context, ensure_ascii=False, default=str)},
         ]
 
+    def _resolve_system_prompt(self) -> str:
+        prompt, metadata = resolve_runtime_prompt(
+            self.prompt_service,
+            "trade_decision_trade_plan",
+            TRADE_PLAN_PROMPT,
+        )
+        self._last_prompt_metadata = metadata
+        return prompt
+
 
 def _card_dict(card: Any) -> dict | None:
     if card is None:
@@ -319,6 +374,59 @@ def _card_dict(card: Any) -> dict | None:
     if isinstance(card, dict):
         return card
     return None
+
+
+def _ai_policy_supports_add(ai_assessment: dict[str, Any], current_pct: float) -> bool:
+    if not isinstance(ai_assessment, dict) or ai_assessment.get("status") != "evaluated":
+        return False
+    stance = str(ai_assessment.get("ai_position_stance") or "").lower()
+    bias = str(ai_assessment.get("recommended_action_bias") or "").lower()
+    target = _to_float(ai_assessment.get("ai_recommended_target_position_pct"), None)
+    if stance not in {"underweight", "no_position"}:
+        return False
+    if bias not in {"allow_add", "prefer_pullback_add"}:
+        return False
+    return target is not None and target > current_pct + 1e-6
+
+
+def _evidence_allows_ai_add(card_pack: TradeDecisionCardPack, asset_stance: str) -> bool:
+    if asset_stance not in {"bullish", "neutral"}:
+        return False
+    fund_status = str(getattr(card_pack.fundamental_valuation_card, "fundamental_status", None) or "unknown")
+    trend_break = str(getattr(card_pack.market_trend_card, "trend_break_level", None) or "unknown")
+    if fund_status in {"red", "orange"}:
+        return False
+    if trend_break in {"severe", "broken"}:
+        return False
+    fallback_count = 0
+    for card in (
+        card_pack.market_trend_card,
+        card_pack.fundamental_valuation_card,
+        card_pack.event_catalyst_card,
+    ):
+        if card is None or getattr(card, "stance", None) == CardStance.INSUFFICIENT_DATA:
+            fallback_count += 1
+    return fallback_count < 2
+
+
+def _ai_calibrated_target(
+    current_pct: float,
+    max_pct: float,
+    ai_target: float | None,
+    ai_range: Any,
+) -> float | None:
+    target = ai_target
+    if isinstance(ai_range, list) and len(ai_range) >= 2:
+        low = _to_float(ai_range[0], None)
+        high = _to_float(ai_range[1], None)
+        if low is not None and high is not None:
+            if target is None:
+                target = low if current_pct < low else high
+            else:
+                target = min(max(target, low), high)
+    if target is None or target <= current_pct + 1e-6:
+        return None
+    return round(min(target, max_pct), 6)
 
 
 def _compact_card(card: Any) -> dict | None:
@@ -431,6 +539,7 @@ TRADE_PLAN_PROMPT = """你是交易计划 Agent。你的任务是把“标的级
 1. 标的观点 asset_stance: bullish | neutral | bearish | insufficient_data
 2. 账户动作 portfolio_action: 建仓、加仓、持有、持有不加仓、减仓、清仓、等待、观察、回避
 3. 动作原因 action_reason_type: asset_view | asset_view_and_account_fit | portfolio_risk_constraint | insufficient_data | event_risk_window | thesis_broken | panic_blocked | no_action
+4. AI 仓位评估 ai_policy_assessment: 这是 AI 独立仓位建议，不是用户偏好；若 status=evaluated，max_position_pct 和 target_position_pct 应优先参考它。
 
 禁止：
 - 编造账户数据、行情、财报、新闻、宏观事件
@@ -440,6 +549,9 @@ TRADE_PLAN_PROMPT = """你是交易计划 Agent。你的任务是把“标的级
 - 无持仓时输出 reduce / sell / reduce_now / sell_thesis_broken
 - 数据不足时输出激进加仓
 - 目标仓位超过 max_position_pct
+- ai_policy_assessment.status=evaluated 时，目标仓位超过 ai_recommended_max_position_pct
+- ai_policy_assessment.recommended_action_bias=hold_no_add/avoid/prefer_reduce 时仍输出激进加仓
+- ai_policy_assessment 显示 underweight/no_position 且 allow_add/prefer_pullback_add 时，无明确阻断原因却输出 hold/watchlist
 - asset_stance=bearish 且已有持仓时建议加仓
 - asset_stance=insufficient_data 时给出强方向动作
 
@@ -449,11 +561,28 @@ TRADE_PLAN_PROMPT = """你是交易计划 Agent。你的任务是把“标的级
 - 给出 current_position_pct、target_position_pct、adjustment_pct、max_position_pct、suggested_cash_amount
 - 给出 execution_conditions、invalidation_conditions、recheck_triggers
 - 给出 risk_reward_assessment，至少包含 entry_quality、upside_scenario、downside_scenario、reward_risk_ratio、wait_for_pullback、pullback_entry_level、invalidation_level、trim_level、event_risk_window、sanitization_notes
+- 如果输出 hold_no_add，summary 或 risk_reward_assessment.sanitization_notes 必须说明明确阻断原因
+- 如果输出 watchlist，summary 必须说明缺少哪些条件才能变成 add_small
+- 不得绕过 Risk Gate；你的输出是 draft action，最终动作仍由 Risk Gate 校验
 
 动作映射：
+- add_small：证据支持小幅提高仓位，适合 underweight 且风险收益合格但不需要追涨。
+- add_on_pullback：AI 支持加仓但催化偏弱、趋势 warning、估值或事件窗口需要更好买点；这是有条件动作，不等同于 hold。
+- add_right_side：趋势突破/右侧确认强，且基本面、风险收益、仓位空间都支持。
 - bullish 无持仓：账户适配良好且置信度中高可 add_small/add_batch/add_on_pullback/add_right_side；事件高风险优先 add_on_pullback/watchlist；现金不足 watchlist/avoid。
 - bullish 已持仓：低于上限才可加仓；接近或超过上限、集中度高或事件风险高时 hold_no_add。
+- 若 AI 仓位评估 recommended_action_bias=prefer_pullback_add，加仓只能使用 add_on_pullback 或更保守动作；若为 hold_no_add/avoid/prefer_reduce，禁止加仓。
+- 若 AI 仓位评估 ai_position_stance=underweight/no_position 且 recommended_action_bias=allow_add/prefer_pullback_add，且 asset_stance=bullish 或 neutral、基本面非 red/orange、趋势非 severe/broken、公开数据非大面积 fallback，则不应默认 hold/watchlist；优先 add_small 或 add_on_pullback。
+- 若 AI 仓位评估 ai_position_stance=near_target，可以 hold，但必须说明“接近 AI 建议仓位，不需要新增资金”。
+- 若 AI 仓位评估 ai_position_stance=overweight/over_limit，禁止 add_like，按风险输出 hold_no_add、trim_on_rebound 或 reduce_now。
+- target_position_pct 优先落在 ai_recommended_target_position_range_pct 内，且不得超过 ai_recommended_max_position_pct；如现金或 Risk Gate 约束导致不能达到 AI target，需要在 summary 或 sanitization_notes 说明。
 - neutral 无持仓：watchlist/wait/avoid；已持仓：hold/hold_no_add，仓位过高且风险明显可 trim_on_rebound/reduce_batch，原因应是 portfolio_risk_constraint。
 - bearish 无持仓：avoid/watchlist；已持仓：reduce_batch/reduce_now/sell_thesis_broken/trim_on_rebound。
 - insufficient_data 无持仓：watchlist/wait/avoid 且 target_position_pct=0；已持仓：hold_no_add，仓位过高可 reduce_batch，但原因必须是 portfolio_risk_constraint 或 insufficient_data。
+
+输出示例（无持仓观察）:
+{"asset_stance":"neutral","portfolio_action":"watchlist","action_reason_type":"no_action","current_position_pct":0.0,"target_position_pct":0.0,"adjustment_pct":0.0,"suggested_cash_amount":0.0,"max_position_pct":0.05,"execution_conditions":["等待财报或关键事件落地","价格回撤后风险收益改善再复查"],"invalidation_conditions":["标的级观点转为 bearish","公开数据继续不足"],"recheck_triggers":["下一次财报发布","事件风险解除","趋势相对基准重新转强"],"risk_reward_assessment":{"entry_quality":"unknown","upside_scenario":"催化兑现且趋势延续时再评估小仓位试探","downside_scenario":"催化不及预期或估值压缩导致继续回撤","reward_risk_ratio":null,"wait_for_pullback":true,"pullback_entry_level":null,"invalidation_level":null,"trim_level":null,"event_risk_window":"medium","sanitization_notes":[]},"data_limitations":[],"summary":"无持仓且标的观点中性，当前不生成买入动作，先纳入观察并等待更清晰的催化或回撤机会。"}
+
+输出示例（已持仓但不加仓）:
+{"asset_stance":"bullish","portfolio_action":"hold_no_add","action_reason_type":"portfolio_risk_constraint","current_position_pct":0.08,"target_position_pct":0.08,"adjustment_pct":0.0,"suggested_cash_amount":0.0,"max_position_pct":0.08,"execution_conditions":["继续持有但不加仓","若价格回撤且仓位上限提高再复查"],"invalidation_conditions":["asset_stance 降为 bearish","核心基本面或趋势证据失效"],"recheck_triggers":["仓位占比下降","财报确认增长","事件风险解除"],"risk_reward_assessment":{"entry_quality":"fair","upside_scenario":"趋势延续且财报兑现时保留已有仓位收益","downside_scenario":"估值压缩或事件风险触发回撤","reward_risk_ratio":1.4,"wait_for_pullback":true,"pullback_entry_level":null,"invalidation_level":null,"trim_level":null,"event_risk_window":"medium","sanitization_notes":[]},"data_limitations":[],"summary":"标的观点偏多但当前仓位已达到建议上限，因此动作应为持有不加仓，而不是继续提高敞口。"}
 """

@@ -715,6 +715,22 @@ class TestTradeReviewAgentFacade:
         mock_runner.generate_single_trade_review.assert_called_once_with(trade_id="trade-123")
         assert result["metadata"]["agent_mode"] == TRADE_REVIEW_AGENT_MODE_LANGGRAPH
 
+    def test_constructor_accepts_investment_policy_service(self):
+        from app.services.trade_review_agent import TradeReviewAgent
+
+        mock_policy_service = MagicMock()
+        agent = TradeReviewAgent(
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            investment_policy_service=mock_policy_service,
+        )
+
+        runner = agent._get_graph_runner()
+
+        assert agent.investment_policy_service is mock_policy_service
+        assert runner.deps.investment_policy_service is mock_policy_service
+
 
 # === Version Constants Tests ===
 

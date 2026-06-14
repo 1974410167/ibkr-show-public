@@ -79,6 +79,7 @@ class TradeReviewGraphDeps:
     mcp_adapter: Any | None = None
     prompt_service: Any | None = None
     monitoring_service: Any | None = None
+    investment_policy_service: Any | None = None
 
 
 def build_trade_review_graph(deps: TradeReviewGraphDeps) -> Any:

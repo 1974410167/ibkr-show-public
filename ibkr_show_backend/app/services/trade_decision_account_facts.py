@@ -286,6 +286,78 @@ class TradeDecisionAccountFactsBuilder:
         hits = response.get("hits", {}).get("hits", [])
         return hits[0].get("_source", {}) if hits else None
 
+    def _latest_symbol_reviews(self, symbols: list[str]) -> dict[str, dict]:
+        normalized_symbols = list(dict.fromkeys(normalize_longbridge_symbol_for_account(symbol) for symbol in symbols if symbol))
+        if not normalized_symbols:
+            return {}
+        try:
+            response = self.es_client.search(
+                index=self.settings.es_trade_review_index,
+                body={
+                    "size": 0,
+                    "query": {"bool": {"filter": [{"terms": {"symbol": normalized_symbols}}]}},
+                    "aggs": {
+                        "by_symbol": {
+                            "terms": {"field": "symbol", "size": len(normalized_symbols)},
+                            "aggs": {
+                                "latest": {
+                                    "top_hits": {
+                                        "sort": [{"created_at": {"order": "desc"}}],
+                                        "size": 1,
+                                        "_source": ["id", "overall_score", "rating", "summary", "mistake_tags", "created_at"],
+                                    }
+                                }
+                            },
+                        }
+                    },
+                },
+            )
+        except ESIndexNotFoundError:
+            return {}
+        buckets = response.get("aggregations", {}).get("by_symbol", {}).get("buckets", [])
+        results: dict[str, dict] = {}
+        for bucket in buckets:
+            hits = bucket.get("latest", {}).get("hits", {}).get("hits", [])
+            if hits:
+                results[str(bucket.get("key"))] = hits[0].get("_source", {})
+        return results
+
+    def _latest_symbol_decisions(self, symbols: list[str]) -> dict[str, dict]:
+        normalized_symbols = list(dict.fromkeys(normalize_longbridge_symbol_for_account(symbol) for symbol in symbols if symbol))
+        if not normalized_symbols:
+            return {}
+        try:
+            response = self.es_client.search(
+                index=self.settings.es_trade_decision_index,
+                body={
+                    "size": 0,
+                    "query": {"bool": {"filter": [{"terms": {"symbol": normalized_symbols}}]}},
+                    "aggs": {
+                        "by_symbol": {
+                            "terms": {"field": "symbol", "size": len(normalized_symbols)},
+                            "aggs": {
+                                "latest": {
+                                    "top_hits": {
+                                        "sort": [{"created_at": {"order": "desc"}}],
+                                        "size": 1,
+                                        "_source": ["id", "action", "overall_score", "created_at"],
+                                    }
+                                }
+                            },
+                        }
+                    },
+                },
+            )
+        except ESIndexNotFoundError:
+            return {}
+        buckets = response.get("aggregations", {}).get("by_symbol", {}).get("buckets", [])
+        results: dict[str, dict] = {}
+        for bucket in buckets:
+            hits = bucket.get("latest", {}).get("hits", {}).get("hits", [])
+            if hits:
+                results[str(bucket.get("key"))] = hits[0].get("_source", {})
+        return results
+
     def _global_mistake_summary(self) -> list[dict]:
         try:
             response = self.es_client.search(
@@ -353,15 +425,26 @@ class TradeDecisionAccountFactsBuilder:
         except ESIndexNotFoundError:
             return []
 
+        position_hits = response.get("hits", {}).get("hits", [])
+        normalized_by_symbol: dict[str, str] = {}
+        for hit in position_hits:
+            source = hit.get("_source", {})
+            symbol = source.get("symbol")
+            if symbol:
+                normalized_by_symbol[str(symbol)] = normalize_longbridge_symbol_for_account(symbol)
+
+        latest_reviews = self._latest_symbol_reviews(list(normalized_by_symbol.values()))
+        latest_decisions = self._latest_symbol_decisions(list(normalized_by_symbol.values()))
+
         holdings = []
-        for hit in response.get("hits", {}).get("hits", []):
+        for hit in position_hits:
             source = hit.get("_source", {})
             symbol = source.get("symbol")
             if not symbol:
                 continue
-            normalized = normalize_longbridge_symbol_for_account(symbol)
-            latest_review = self._latest_symbol_review(normalized)
-            latest_decision = self._latest_symbol_decision(normalized)
+            normalized = normalized_by_symbol.get(str(symbol)) or normalize_longbridge_symbol_for_account(symbol)
+            latest_review = latest_reviews.get(normalized)
+            latest_decision = latest_decisions.get(normalized)
             position_pct = _nav_percent_to_ratio(source.get("percent_of_nav"))
             holdings.append({
                 "symbol": symbol,

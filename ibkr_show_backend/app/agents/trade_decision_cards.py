@@ -585,6 +585,9 @@ class TradeDecisionCardPack:
     subagent_traces: list[TradeDecisionSubAgentTrace] = field(default_factory=list)
     # Stage 03 - per-symbol investment thesis (code-only, default if missing)
     investment_thesis: dict | None = None
+    # Stage 06 - user preference only; not an AI recommendation or risk cap.
+    user_investment_policy: dict | None = None
+    ai_policy_assessment: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -606,6 +609,8 @@ class TradeDecisionCardPack:
             "data_quality_summary": self.data_quality_summary,
             "subagent_traces": [t.to_dict() if isinstance(t, TradeDecisionSubAgentTrace) else t for t in self.subagent_traces],
             "investment_thesis": self.investment_thesis,
+            "user_investment_policy": self.user_investment_policy,
+            "ai_policy_assessment": self.ai_policy_assessment,
         }
 
 

@@ -254,6 +254,7 @@ onMounted(() => {
         <nav class="admin-tabs">
           <Button label="LLM 配置" icon="pi pi-sparkles" class="terminal-nav__button is-active" />
           <Button label="IBKR 数据源" icon="pi pi-database" class="terminal-nav__button" @click="router.push('/admin/ibkr')" />
+          <Button label="投资策略" icon="pi pi-sliders-h" class="terminal-nav__button" @click="router.push('/admin/investment-policy')" />
           <Button label="邮件配置" icon="pi pi-envelope" class="terminal-nav__button" @click="router.push('/admin/email')" />
           <Button label="Longbridge MCP" icon="pi pi-link" class="terminal-nav__button" @click="router.push('/admin/longbridge-mcp')" />
           <Button label="宏观数据源" icon="pi pi-calendar-clock" class="terminal-nav__button" @click="router.push('/admin/market-events')" />

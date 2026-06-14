@@ -1,6 +1,12 @@
 import json
 
 from app.agents.trade_decision_cards import AccountFactSnapshot
+from app.agents.trade_decision_structured_outputs import (
+    build_debate_judge_contract,
+    build_debate_rebuttal_contract,
+    build_debate_thesis_contract,
+    build_trade_plan_contract,
+)
 from app.services.trade_decision_sub_agents import (
     EVENT_CATALYST_SYSTEM_PROMPT,
     FUNDAMENTAL_VALUATION_SYSTEM_PROMPT,
@@ -170,6 +176,21 @@ def event_json(**overrides) -> str:
     }
     payload.update(overrides)
     return json.dumps(payload, ensure_ascii=False)
+
+
+def test_debate_and_trade_plan_contracts_include_examples() -> None:
+    contracts = [
+        build_debate_thesis_contract("bull_thesis"),
+        build_debate_thesis_contract("bear_thesis"),
+        build_debate_rebuttal_contract("bull_rebuttal"),
+        build_debate_rebuttal_contract("bear_rebuttal"),
+        build_debate_judge_contract(),
+        build_trade_plan_contract(),
+    ]
+
+    for contract in contracts:
+        assert contract.examples, contract.name
+        assert all(isinstance(example, dict) for example in contract.examples)
 
 
 def test_market_trend_normal_json_no_repair() -> None:

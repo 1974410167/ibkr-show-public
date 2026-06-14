@@ -1,8 +1,8 @@
 # IBKR Trade Agent
 
-**The open-source Trade Agent for real IBKR portfolios.**
+**Open-source portfolio analytics and AI research workspace for real IBKR portfolios.**
 
-Most trading agents analyze stocks. **IBKR Trade Agent analyzes your actual portfolio.**
+Most trading agents analyze stocks in isolation. **IBKR Trade Agent starts from your actual IBKR account data**, then combines portfolio history, current holdings, public market context, and AI agents into one review workflow.
 
 [中文文档](README.zh-CN.md)
 
@@ -13,14 +13,14 @@ Most trading agents analyze stocks. **IBKR Trade Agent analyzes your actual port
 ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 
-IBKR Trade Agent is an **IBKR** account analytics and AI research workspace for a **portfolio dashboard**, **trade review**, **decision agents**, and **account-level analytics**. It imports IBKR Flex Query data or historical CSV files into Elasticsearch, serves account APIs through FastAPI, and provides a Vue dashboard for portfolio monitoring, trade replay, and AI-assisted research.
+IBKR Trade Agent imports IBKR Flex Query data or historical CSV files into Elasticsearch, serves account and agent APIs through FastAPI, and provides a Vue dashboard for portfolio monitoring, trade replay, decision review, market-event tracking, and AI-assisted research.
 
-**Risk boundary**: this project is **not a broker**, **not an auto-trading bot**, and **does not connect to IBKR trading APIs or order placement APIs**. It does not submit, modify, cancel, route, or execute live orders. IBKR Trade Agent only analyzes account data and public market context to support human research and review.
+**Risk boundary**: this project is **not a broker**, **not an auto-trading bot**, and **does not connect to IBKR trading APIs or order placement APIs**. It does not submit, modify, cancel, route, or execute live orders. It only analyzes account data and public market context to support human research and review.
 
-- **IBKR is the only source for private account data**: account balances, positions, trades, cost basis, Profit and Loss (PnL), dividends, deposits, and withdrawals.
+- **IBKR is the source of truth for private account data**: balances, positions, trades, cost basis, PnL, dividends, deposits, and withdrawals.
 - **LongBridge is used only for public market data**: quotes, candles, news, announcements, earnings, valuation, benchmarks, and macro context.
-- **Large Language Model (LLM) features are optional**: core account, position, trade, cash-flow, and dividend pages still work without an LLM provider.
-- **Demo mode is enabled by default**: you can explore the full product without an IBKR account.
+- **LLM features are optional**: core account, position, trade, cash-flow, dividend, and market-event pages can run without an LLM provider.
+- **Demo mode is enabled by default**: you can explore the product without an IBKR account.
 
 ## Features
 
@@ -29,53 +29,57 @@ IBKR Trade Agent is an **IBKR** account analytics and AI research workspace for 
 - Account overview: total equity, cash, market value, PnL, Time-Weighted Return (TWR), equity curves, and PnL calendar.
 - Position analytics: quantity, average cost, market price, market value, allocation, daily move, concentration, and asset distribution.
 - Trade records: filter by date, symbol, and side; sort, paginate, and export CSV.
-- Deposits, withdrawals, and dividends: currency summaries, withholding tax, and net cash received.
-- Account-level analytics for portfolio exposure, realized/unrealized performance, cash movement, and dividend income.
+- Cash flows and dividends: deposits, withdrawals, withholding tax, currency summaries, and net cash received.
+- Market events: macro events, earnings, announcements, source configuration, sync runs, and event impact context.
 
-### AI Trade Agents
+### AI Agents
 
-- Daily position review: generated automatically with optional Simple Mail Transfer Protocol (SMTP) email delivery.
-- Trade review agent: symbol-level and single-trade review with a 100-point scoring system.
-- Trade decision agent: add, hold, reduce, or exit suggestions with earnings analysis.
-- Optional LLM provider configuration through the admin UI, compatible with OpenAI-style APIs.
+- Daily position review: account-level daily review with optional SMTP delivery.
+- Trade review agent: symbol-level and single-trade review with scoring and mistake summaries.
+- Trade decision agent: add, hold, reduce, exit, or wait suggestions with risk gates, quality checks, and outcome replay.
+- Risk assessment agent: portfolio-level risk assessment with background task tracking.
+- Account Copilot: conversational account assistant with tool calls, run traces, memory, approvals, and monitoring.
+- Agent observability: task graph, run trace, replay snapshots, LLM/tool metrics, structured-output metrics, and regression/evaluation harnesses.
 
 ### Market Data Integration
 
 - LongBridge OAuth one-click authorization with automatic Client ID registration.
-- LongBridge OpenAPI / SDK / Model Context Protocol (MCP) reuse the same OAuth token.
-- Public market data only: quotes, candles, benchmark ETFs, news, announcements, earnings, and valuation.
+- LongBridge OpenAPI / SDK / MCP reuse the same OAuth token.
+- Public market data only: quotes, candles, benchmark ETFs, news, announcements, earnings, valuation, and macro context.
 - No LongBridge account, order, execution, or trading API usage.
 
-### Admin & Deployment
+### Admin & Operations
 
-- Admin pages for IBKR Flex, LLM providers, LongBridge OAuth, Email SMTP, and system status.
-- System status page at `/admin/system` with 10 component health checks.
+- Admin pages for IBKR Flex, LLM providers, LongBridge OAuth, Email SMTP, investment policy, prompt versions, market events, agent monitoring, evaluation harnesses, and system status.
+- System status page at `/admin/system` with component health checks.
 - Docker Compose deployment with Elasticsearch, Redis, backend, frontend, and worker services.
-- Release safety and Docker verification scripts.
+- Release safety and Docker verification scripts for public distribution checks.
 
 ## Why IBKR Trade Agent?
 
 Most portfolio dashboards stop at positions and returns. Most trading agents focus on single-stock research. IBKR Trade Agent is built around a different idea: start from the investor's real IBKR account, then combine account history, holdings, realized trades, public market data, earnings/news context, and AI agents into one research workflow.
 
-It is designed for long-term investors who care about account-level analysis: portfolio concentration, cash movement, dividends, realized and unrealized performance, review quality, and decision discipline. IBKR remains the only source for private account data, while LongBridge is used only for public market data such as quotes, candles, news, announcements, earnings, valuation, benchmarks, and macro context.
+It is designed for long-term investors who care about account-level analysis: portfolio concentration, cash movement, dividends, realized and unrealized performance, review quality, decision discipline, and post-decision evaluation.
 
 ## Architecture
 
 ```text
 IBKR Flex Query / CSV
-  ↓
-Worker Parser
-  ↓
-Elasticsearch
-  ↓
-FastAPI Backend
-  ↓
-Vue Dashboard
-  ↓
-AI Trade Agents
-  ↓
-Trade Review / Trade Decision / Daily Report
+        |
+        v
+Worker ingestion and parsers
+        |
+        v
+Elasticsearch <---- FastAPI backend ----> Redis cache / task support
+        |                 |
+        |                 v
+        |          Agent runtime, traces, replay, eval
+        |                 |
+        v                 v
+Vue dashboard and admin console
 ```
+
+The backend keeps route files thin and puts business logic in services and repositories. The worker owns parsing, transformation, idempotent Elasticsearch upserts, and scheduled daily imports. The frontend uses Vue 3, Vite, TypeScript, PrimeVue, and ECharts.
 
 ## Screenshots
 
@@ -98,20 +102,7 @@ docker compose up -d
 
 The first startup builds Docker images and usually takes about 3-5 minutes. After startup, open `http://localhost:8080`. The first visit will guide you through administrator account creation.
 
-`DEMO_MODE=true` is enabled by default. The worker init service imports sanitized sample data such as AAPL and MSFT, so you can explore the full UI without an IBKR account.
-
-## Automated Verification
-
-```bash
-scripts/verify_docker.sh
-```
-
-The verification script checks Docker Compose config / build / up, `/health`, demo data import, bootstrap initialization, authenticated session behavior, `/api/admin/system/status` with 10 components, and frontend HTML. When a check fails, it prints the most relevant logs.
-
-```bash
-# Clean containers and volumes after verification
-CLEANUP=1 scripts/verify_docker.sh
-```
+`DEMO_MODE=true` is enabled by default. The worker init service imports sanitized sample data such as AAPL and MSFT, so you can explore the UI without an IBKR account.
 
 ## Demo Mode
 
@@ -135,6 +126,11 @@ Business configuration is entered in the admin UI. You do **not** need to put th
 | LLM Provider / API Key / Model | `/admin/llm` |
 | LongBridge OAuth | `/admin/longbridge-mcp` |
 | Email SMTP | `/admin/email` |
+| Investment policy | `/admin/investment-policy` |
+| Prompt versions | `/admin/prompts` |
+| Market event sources | `/admin/market-events` |
+| Agent monitoring | `/admin/agent-monitoring` |
+| Agent evaluation harness | `/admin/harness` |
 | System status overview | `/admin/system` |
 
 Normal users do not need to put IBKR Flex Token, LLM API Key, LongBridge Client ID, or Email SMTP passwords in `.env`. Configure them through the admin pages instead.
@@ -144,8 +140,8 @@ Normal users do not need to put IBKR Flex Token, LLM API Key, LongBridge Client 
 - Go to `/admin/longbridge-mcp` and click the authorization button.
 - The system automatically registers an OAuth Client ID and redirects to LongBridge authorization.
 - After consent, OpenAPI / SDK / MCP reuse the same OAuth token.
-- LongBridge is used **only for public market data**: quotes, candles, benchmark ETFs, news, announcements, earnings, and valuation.
-- LongBridge is **not used for** account data, positions, orders, executions, or order placement.
+- LongBridge is used **only for public market data**: quotes, candles, benchmark ETFs, news, announcements, earnings, valuation, and macro context.
+- LongBridge is **not used for** account data, positions, orders, executions, deposits, withdrawals, or order placement.
 
 ## Data Persistence
 
@@ -157,13 +153,14 @@ Docker Compose uses three named volumes:
 | `redis-data` | Redis cache |
 | `backend-data` | JSON config files under `data/config/` |
 
-Files stored in `backend-data`:
+Files stored in `backend-data` may include:
 
 - `admin_auth.json`: administrator account.
 - `ibkr_flex.json`: IBKR Flex configuration.
 - `llm_providers.json`: LLM provider list.
 - `longbridge_openapi_oauth.json`: LongBridge OAuth.
 - `email.json`: Email SMTP configuration.
+- `market_event_credentials.json`: market-event provider credentials.
 
 > **Note**: these files may contain tokens and API keys. Do not commit them to Git, and handle backups carefully.
 
@@ -179,6 +176,19 @@ docker compose down -v                   # Stop and delete volumes
 docker compose build --no-cache && docker compose up -d  # Rebuild
 ```
 
+## Automated Verification
+
+```bash
+scripts/verify_docker.sh
+```
+
+The verification script checks Docker Compose config / build / up, `/health`, demo data import, bootstrap initialization, authenticated session behavior, `/api/admin/system/status`, and frontend HTML. It temporarily writes a verification `.env`, restores the original `.env` on exit, and prints relevant logs when a check fails.
+
+```bash
+# Clean containers and volumes after verification
+CLEANUP=1 scripts/verify_docker.sh
+```
+
 ## Developer Mode
 
 If you want local development instead of Docker:
@@ -188,9 +198,10 @@ If you want local development instead of Docker:
 
 ### Requirements
 
-- Python 3.11+
-- Node.js 18+
-- Elasticsearch 8.x
+- Python 3.11+; Python 3.12 is recommended because CI uses it.
+- Node.js 18+; Node.js 20 is recommended because CI uses it.
+- Elasticsearch 8.x.
+- Redis is recommended for cache and task-related flows.
 
 ### Backend
 
@@ -225,10 +236,10 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 ```bash
 # Backend
-pytest ibkr_show_backend/tests
+cd ibkr_show_backend && ./.venv/bin/python -m pytest
 
 # Worker
-pytest ibkr_show_worker/tests
+cd ibkr_show_worker && ./.venv/bin/python -m pytest
 
 # Frontend
 cd ibkr_show_frontend && npm run test && npm run build
@@ -238,6 +249,7 @@ cd ibkr_show_frontend && npm run test && npm run build
 
 ```bash
 # Single file
+cd ibkr_show_worker
 python -m worker.main import-daily-file --file /path/to/file.csv
 
 # Batch
@@ -264,7 +276,7 @@ On first startup, create the administrator account through the page. It is not t
 
 ### Can the app start without LongBridge or LLM configuration?
 
-Yes. LongBridge and LLM are optional. Without them, local IBKR account, position, trade, cash-flow, and dividend pages still work.
+Yes. LongBridge and LLM are optional. Without them, local IBKR account, position, trade, cash-flow, dividend, and basic market-event pages can still run.
 
 ### How do I reset the administrator password?
 
@@ -288,7 +300,7 @@ docker compose up -d
 Upload files through the `/admin/ibkr` page, or run:
 
 ```bash
-docker cp your-file.csv ibkr_show-backend-1:/app/ibkr_show_backend/data/
+docker compose cp your-file.csv backend:/app/ibkr_show_backend/data/your-file.csv
 docker compose exec worker-scheduler python -m worker.main import-daily-file --file /app/ibkr_show_backend/data/your-file.csv
 ```
 
@@ -297,27 +309,30 @@ docker compose exec worker-scheduler python -m worker.main import-daily-file --f
 - This project is **not investment advice**. LLM output is for research reference only.
 - This project is **not a broker** and **not an automated trading bot**.
 - This project **does not connect to IBKR order placement APIs** and does not place trades.
+- This project **does not use LongBridge account, order, execution, or trading APIs**.
 - Users are responsible for their own investment decisions and risk.
 - Do **not publicly deploy** an instance that contains real account data unless it is protected by an internal network, VPN, or reverse-proxy authentication.
-- Do **not commit** tokens, API keys, IBKR CSV files, or account data to Git.
+- Do **not commit** tokens, API keys, IBKR CSV files, broker statements, account data, or generated config JSON files to Git.
 
-## Pre-release Checks
+## Public Repository Hygiene
+
+This repository is intended to be safe for public distribution. Before publishing a release or synchronizing a public copy, run:
 
 ```bash
 scripts/check_release_safety.sh   # Scan for sensitive information leaks
 scripts/verify_docker.sh          # End-to-end Docker verification
 ```
 
+The public repository should never contain private deployment details, personal machine paths, server addresses, credentials, downloaded broker statements, `.env` files, or generated `data/config/*.json` files.
+
 ## Roadmap
 
-- Multi-agent investment debate: bullish, bearish, macro, technical, and risk agents.
-- Event calendar agent for CPI, FOMC, earnings, and macro events.
-- Agent decision evaluation with post-trade performance tracking.
-- Agent trace observability for prompts, tool calls, and intermediate outputs.
-- Encrypted storage for API keys and account configuration.
-- Richer demo portfolio data.
-- Multi-user and permission model.
-- More complete CI and release workflow.
+- Richer demo portfolio data and scenario coverage.
+- More complete multi-user and permission model.
+- More evaluation coverage for agent correctness, replay, and regression gates.
+- Better operational dashboards for long-running agent tasks.
+- More market-event providers and event impact analytics.
+- Broader deployment templates and release workflow hardening.
 
 ## License
 

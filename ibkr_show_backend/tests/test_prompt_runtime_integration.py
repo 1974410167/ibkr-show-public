@@ -1,5 +1,7 @@
 import json
+from types import SimpleNamespace
 
+from app.agents.trade_decision_cards import DebateJudgeCard
 from app.agents.account_copilot.runtime import AccountCopilotRuntime
 from app.agents.prompt_runtime import resolve_runtime_prompt
 from app.agents.trade_decision_graph.graph import TradeDecisionGraphDeps
@@ -15,7 +17,10 @@ from app.agents.trade_review_graph.nodes import (
 from app.services.daily_review_macro_evidence_agent import DailyReviewMacroEvidenceAgent
 from app.services.daily_review_symbol_evidence_agent import DailyReviewSymbolEvidenceAgent
 from app.services.trade_decision_sub_agents import MARKET_TREND_SYSTEM_PROMPT, MarketTrendSubAgent
+from app.services.trade_decision_debate_agents import BullThesisAgent
+from app.services.trade_decision_trade_plan_agent import TradeDecisionTradePlanAgent
 from tests.test_account_copilot_react_runtime import FakeLLMService, action, base_state, make_registry
+from tests.test_trade_decision_langgraph import _make_card_pack
 
 
 class FakePromptService:
@@ -290,3 +295,88 @@ def test_trade_decision_graph_nodes_pass_prompt_service(monkeypatch) -> None:
     assert market["market_trend_prompt_metadata"]["source"] == "admin_active"
     assert fund["fundamental_valuation_prompt_metadata"]["source"] == "admin_active"
     assert event["event_catalyst_prompt_metadata"]["source"] == "admin_active"
+
+
+def test_trade_decision_debate_and_trade_plan_use_custom_prompts() -> None:
+    prompt_service = FakePromptService(
+        {
+            "trade_decision_bull_thesis": "CUSTOM_BULL_THESIS_PROMPT",
+            "trade_decision_trade_plan": "CUSTOM_TRADE_PLAN_PROMPT",
+        }
+    )
+    card_pack = _make_card_pack()
+
+    bull = BullThesisAgent(None, prompt_service=prompt_service)
+    captured_bull_messages = []
+
+    def fake_bull_generate(messages, *args, **kwargs):
+        captured_bull_messages.append(messages)
+        return SimpleNamespace(
+            ok=True,
+            payload={
+                "agent_name": "bull_thesis",
+                "stance": "bullish",
+                "conviction": "medium",
+                "summary": "custom bull",
+                "core_claims": [],
+                "evidence_refs": [],
+                "weak_points": [],
+                "risk_flags": [],
+                "data_limitations": [],
+            },
+            repaired=False,
+            repair_attempts=0,
+            fallback_used=False,
+            error_code=None,
+            error_message=None,
+            metadata={"contract_name": "trade_decision_bull_thesis"},
+            trace=[],
+        )
+
+    bull.runtime.generate = fake_bull_generate
+
+    _, bull_trace = bull.generate(card_pack)
+
+    plan = TradeDecisionTradePlanAgent(None, prompt_service=prompt_service)
+    captured_messages = []
+    plan.runtime.generate = lambda messages, *args, **kwargs: (
+        captured_messages.append(messages)
+        or SimpleNamespace(
+            ok=True,
+            payload={
+                "asset_stance": "neutral",
+                "portfolio_action": "watchlist",
+                "action_reason_type": "no_action",
+                "target_position_pct": 0,
+                "execution_conditions": [],
+                "invalidation_conditions": [],
+                "recheck_triggers": [],
+                "risk_reward_assessment": {},
+                "data_limitations": [],
+                "summary": "custom plan",
+            },
+            repaired=False,
+            repair_attempts=0,
+            fallback_used=False,
+            error_code=None,
+            error_message=None,
+            metadata={"contract_name": "trade_decision_trade_plan", "llm_call_metadata": {}},
+            trace=[],
+        )
+    )
+    judge = DebateJudgeCard(
+        symbol=card_pack.symbol,
+        asset_stance="neutral",
+        conviction="low",
+        winner="balanced",
+        reasoning_summary="balanced",
+    )
+
+    _, plan_trace = plan.generate(card_pack, judge)
+
+    assert bull_trace.prompt_metadata["source"] == "admin_active"
+    assert bull_trace.prompt_metadata["prompt_key"] == "trade_decision_bull_thesis"
+    assert captured_bull_messages[0][0]["content"] == "CUSTOM_BULL_THESIS_PROMPT"
+    assert captured_messages[0][0]["content"] == "CUSTOM_TRADE_PLAN_PROMPT"
+    assert plan_trace.prompt_metadata["source"] == "admin_active"
+    assert plan_trace.prompt_metadata["prompt_key"] == "trade_decision_trade_plan"

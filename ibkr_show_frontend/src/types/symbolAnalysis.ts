@@ -75,3 +75,32 @@ export interface SymbolAiAdviceResponse {
   data_limitations: string[]
   raw_response: string | null
 }
+
+export type SymbolAnalysisTaskStatus = 'queued' | 'running' | 'completed' | 'failed'
+
+export interface SymbolAnalysisTaskStep {
+  id: string
+  label: string
+  status: SymbolAnalysisTaskStatus
+}
+
+export interface SymbolAnalysisTask {
+  id: string
+  label: string
+  status: SymbolAnalysisTaskStatus
+  stage: string
+  started_at: string
+  completed_at: string | null
+  error_message: string | null
+  steps: SymbolAnalysisTaskStep[]
+}
+
+export interface SymbolAnalysisSnapshot {
+  loading: boolean
+  errorMessage: string
+  singleFinancials: SymbolFinancialsResponse | null
+  comparison: SymbolComparisonResponse | null
+  aiAdvice: SymbolAiAdviceResponse | null
+  aiAdviceLoading: boolean
+  aiAdviceError: string
+}

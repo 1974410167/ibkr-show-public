@@ -242,6 +242,7 @@ class TestGraphParallelStructure:
         graph_obj = graph.get_graph()
         node_names = list(graph_obj.nodes.keys())
         assert "build_account_facts" in node_names
+        assert "load_user_investment_policy" in node_names
         assert "account_fit" in node_names
         assert "market_trend" in node_names
         assert "fundamental_valuation" in node_names
@@ -263,7 +264,9 @@ class TestGraphParallelStructure:
 
         node_ids = {node["id"] for node in TRADE_DECISION_GRAPH_NODES}
         for node_id in {
+            "load_user_investment_policy",
             "market_event_context",
+            "ai_policy_assessment",
             "bull_thesis",
             "bear_thesis",
             "bull_rebuttal",
@@ -278,14 +281,20 @@ class TestGraphParallelStructure:
 
         edges = {(edge["source"], edge["target"]) for edge in TRADE_DECISION_GRAPH_EDGES}
         expected = {
-            ("build_account_facts", "market_event_context"),
+            ("build_account_facts", "load_user_investment_policy"),
+            ("load_user_investment_policy", "account_fit"),
+            ("load_user_investment_policy", "market_trend"),
+            ("load_user_investment_policy", "fundamental_valuation"),
+            ("load_user_investment_policy", "event_catalyst"),
+            ("load_user_investment_policy", "market_event_context"),
             ("account_fit", "build_card_pack"),
             ("market_trend", "build_card_pack"),
             ("fundamental_valuation", "build_card_pack"),
             ("event_catalyst", "build_card_pack"),
             ("market_event_context", "build_card_pack"),
-            ("build_card_pack", "bull_thesis"),
-            ("build_card_pack", "bear_thesis"),
+            ("build_card_pack", "ai_policy_assessment"),
+            ("ai_policy_assessment", "bull_thesis"),
+            ("ai_policy_assessment", "bear_thesis"),
             ("bull_thesis", "bull_rebuttal"),
             ("bear_thesis", "bull_rebuttal"),
             ("bull_thesis", "bear_rebuttal"),
@@ -298,8 +307,8 @@ class TestGraphParallelStructure:
         }
         assert expected.issubset(edges)
 
-    def test_build_account_facts_fans_out_to_five(self):
-        """build_account_facts node should have edges to all 5 evidence nodes."""
+    def test_build_account_facts_flows_to_user_policy_node(self):
+        """build_account_facts should load user preference before evidence fan-out."""
         from app.agents.trade_decision_graph.graph import build_trade_decision_graph, TradeDecisionGraphDeps
 
         deps = TradeDecisionGraphDeps(
@@ -311,16 +320,33 @@ class TestGraphParallelStructure:
         graph = build_trade_decision_graph(deps)
         graph_obj = graph.get_graph()
 
-        # Check edges from build_account_facts
         edges_from_facts = [
             edge.target for edge in graph_obj.edges
             if edge.source == "build_account_facts"
         ]
-        assert "account_fit" in edges_from_facts
-        assert "market_trend" in edges_from_facts
-        assert "fundamental_valuation" in edges_from_facts
-        assert "event_catalyst" in edges_from_facts
-        assert "market_event_context" in edges_from_facts
+        assert edges_from_facts == ["load_user_investment_policy"]
+
+    def test_user_policy_node_fans_out_to_five(self):
+        from app.agents.trade_decision_graph.graph import build_trade_decision_graph, TradeDecisionGraphDeps
+
+        deps = TradeDecisionGraphDeps(
+            account_facts_builder=MagicMock(),
+            llm_service=MagicMock(),
+            repository=MagicMock(),
+            mcp_adapter=None,
+        )
+        graph = build_trade_decision_graph(deps)
+        graph_obj = graph.get_graph()
+
+        edges_from_policy = [
+            edge.target for edge in graph_obj.edges
+            if edge.source == "load_user_investment_policy"
+        ]
+        assert "account_fit" in edges_from_policy
+        assert "market_trend" in edges_from_policy
+        assert "fundamental_valuation" in edges_from_policy
+        assert "event_catalyst" in edges_from_policy
+        assert "market_event_context" in edges_from_policy
 
     def test_five_evidence_nodes_fan_in_to_build_card_pack(self):
         """All 5 evidence nodes should have edges to build_card_pack."""
@@ -357,8 +383,9 @@ class TestGraphParallelStructure:
         graph = build_trade_decision_graph(deps)
         graph_obj = graph.get_graph()
         edges = {(edge.source, edge.target) for edge in graph_obj.edges}
-        assert ("build_card_pack", "bull_thesis") in edges
-        assert ("build_card_pack", "bear_thesis") in edges
+        assert ("build_card_pack", "ai_policy_assessment") in edges
+        assert ("ai_policy_assessment", "bull_thesis") in edges
+        assert ("ai_policy_assessment", "bear_thesis") in edges
         assert ("bull_thesis", "bull_rebuttal") in edges
         assert ("bear_thesis", "bull_rebuttal") in edges
         assert ("bull_thesis", "bear_rebuttal") in edges
@@ -500,6 +527,7 @@ class TestNodesClosureDeps:
         """All node factories should return callables."""
         from app.agents.trade_decision_graph.nodes import (
             make_build_account_facts_node,
+            make_load_user_investment_policy_node,
             make_account_fit_node,
             make_market_trend_node,
             make_fundamental_valuation_node,
@@ -519,6 +547,7 @@ class TestNodesClosureDeps:
         mock_deps = MagicMock()
         for factory in [
             make_build_account_facts_node,
+            make_load_user_investment_policy_node,
             make_account_fit_node,
             make_market_trend_node,
             make_fundamental_valuation_node,
@@ -544,6 +573,43 @@ class TestNodesClosureDeps:
         source = inspect.getsource(nodes)
         assert "state[\"_deps\"]" not in source
         assert "state['_deps']" not in source
+
+
+class TestUserInvestmentPolicyNode:
+    def test_load_user_investment_policy_reads_user_config(self):
+        from app.agents.trade_decision_graph.nodes import make_load_user_investment_policy_node
+
+        deps = MagicMock()
+        deps.investment_policy_service.get_policy_for_symbol.return_value = {
+            "source": "user_config",
+            "symbol": "AMD",
+            "user_investment_preference": {
+                "asset_role": "core_growth",
+                "conviction": "high",
+                "user_preferred_target_position_pct": 0.2,
+                "user_preferred_max_position_pct": 0.28,
+                "user_preferred_min_position_pct": 0.0,
+            },
+        }
+
+        result = make_load_user_investment_policy_node(deps)({"normalized_symbol": "AMD.US"})
+
+        assert result["user_investment_policy"]["source"] == "user_config"
+        deps.investment_policy_service.get_policy_for_symbol.assert_called_once_with("AMD.US")
+        assert result["node_traces"][0]["node_name"] == "load_user_investment_policy"
+
+    def test_load_user_investment_policy_failure_falls_back(self):
+        from app.agents.trade_decision_graph.nodes import make_load_user_investment_policy_node
+
+        deps = MagicMock()
+        deps.investment_policy_service.get_policy_for_symbol.side_effect = RuntimeError("boom")
+
+        result = make_load_user_investment_policy_node(deps)({"normalized_symbol": "AMD"})
+
+        assert result["user_investment_policy"]["source"] == "fallback"
+        assert result["user_investment_policy"]["user_investment_preference"]["user_preferred_max_position_pct"] == 0.28
+        assert "用户投资偏好读取失败" in result["data_limitations"][0]
+        assert result["node_traces"][0]["fallback_used"] is True
 
 
 # === Test: Graph builds with closure deps ===
@@ -864,6 +930,179 @@ class TestMultiAgentSkeletonNodes:
         assert "target_position_pct_truncated_to_max_position_pct" in card.risk_reward_assessment["sanitization_notes"]
         assert "insufficient_data_add_downgraded" in card.risk_reward_assessment["sanitization_notes"]
 
+    def test_trade_plan_agent_prefers_ai_policy_max_and_bias(self):
+        from app.services.trade_decision_trade_plan_agent import TradeDecisionTradePlanAgent
+
+        class FakeLLM:
+            def chat(self, messages, **kwargs):
+                return """
+                {
+                  "asset_stance": "bullish",
+                  "portfolio_action": "add_batch",
+                  "action_reason_type": "asset_view_and_account_fit",
+                  "current_position_pct": 0.04,
+                  "target_position_pct": 0.20,
+                  "adjustment_pct": 0.16,
+                  "suggested_cash_amount": 16000,
+                  "max_position_pct": 0.20,
+                  "execution_conditions": ["趋势确认"],
+                  "invalidation_conditions": ["跌破失效位"],
+                  "recheck_triggers": ["财报"],
+                  "risk_reward_assessment": {"entry_quality": "medium"},
+                  "data_limitations": [],
+                  "summary": "模型误给强加仓。"
+                }
+                """
+
+        snapshot = _make_snapshot(is_holding=True)
+        snapshot.position_pct = 0.04
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        card_pack.account_fit_card.max_suggested_position_pct = 0.30
+        card_pack.ai_policy_assessment = {
+            "status": "evaluated",
+            "ai_recommended_max_position_pct": 0.12,
+            "ai_recommended_target_position_pct": 0.10,
+            "recommended_action_bias": "hold_no_add",
+        }
+        judge_card = DebateJudgeCard(
+            symbol="AAPL",
+            asset_stance="bullish",
+            conviction="medium",
+            winner="bull",
+            reasoning_summary="偏多。",
+        )
+
+        card, trace = TradeDecisionTradePlanAgent(FakeLLM()).generate(card_pack, judge_card)
+
+        assert trace.status == "completed"
+        assert card.max_position_pct == pytest.approx(0.12)
+        assert card.portfolio_action == "hold_no_add"
+        assert card.target_position_pct == pytest.approx(0.04)
+        assert "ai_policy_bias_hold_no_add_downgraded_add" in card.risk_reward_assessment["sanitization_notes"]
+
+    def test_trade_plan_agent_uses_thesis_max_before_account_fit_when_ai_fallback(self):
+        from app.services.trade_decision_trade_plan_agent import TradeDecisionTradePlanAgent
+
+        class FakeLLM:
+            def chat(self, messages, **kwargs):
+                return """
+                {
+                  "asset_stance": "bullish",
+                  "portfolio_action": "add_small",
+                  "action_reason_type": "asset_view_and_account_fit",
+                  "current_position_pct": 0.04,
+                  "target_position_pct": 0.18,
+                  "adjustment_pct": 0.14,
+                  "suggested_cash_amount": 14000,
+                  "max_position_pct": 0.18,
+                  "execution_conditions": ["趋势确认"],
+                  "invalidation_conditions": ["跌破失效位"],
+                  "recheck_triggers": ["财报"],
+                  "risk_reward_assessment": {"entry_quality": "medium"},
+                  "data_limitations": [],
+                  "summary": "加小仓。"
+                }
+                """
+
+        snapshot = _make_snapshot(is_holding=True)
+        snapshot.position_pct = 0.04
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        card_pack.account_fit_card.max_suggested_position_pct = 0.05
+        card_pack.investment_thesis = {"role": "core_growth", "max_position_pct": 0.20, "target_position_pct": 0.16}
+        card_pack.ai_policy_assessment = {"status": "fallback"}
+        judge_card = DebateJudgeCard(symbol="AAPL", asset_stance="bullish", conviction="medium", winner="bull", reasoning_summary="偏多。")
+
+        card, _trace = TradeDecisionTradePlanAgent(FakeLLM()).generate(card_pack, judge_card)
+
+        assert card.max_position_pct == pytest.approx(0.20)
+        assert card.target_position_pct == pytest.approx(0.18)
+
+    def test_trade_plan_agent_promotes_unexplained_hold_when_ai_underweight_allow_add(self):
+        from app.services.trade_decision_trade_plan_agent import TradeDecisionTradePlanAgent
+
+        class FakeLLM:
+            def chat(self, messages, **kwargs):
+                return """
+                {
+                  "asset_stance": "bullish",
+                  "portfolio_action": "hold",
+                  "action_reason_type": "no_action",
+                  "current_position_pct": 0.04,
+                  "target_position_pct": 0.04,
+                  "adjustment_pct": 0,
+                  "suggested_cash_amount": 0,
+                  "max_position_pct": 0.15,
+                  "execution_conditions": ["继续观察"],
+                  "invalidation_conditions": ["跌破失效位"],
+                  "recheck_triggers": ["财报"],
+                  "risk_reward_assessment": {"entry_quality": "medium"},
+                  "data_limitations": [],
+                  "summary": "无理由持有。"
+                }
+                """
+
+        snapshot = _make_snapshot(is_holding=True)
+        snapshot.position_pct = 0.04
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        card_pack.market_trend_card.trend_break_level = "none"
+        card_pack.fundamental_valuation_card.fundamental_status = "green"
+        card_pack.ai_policy_assessment = {
+            "status": "evaluated",
+            "ai_position_stance": "underweight",
+            "recommended_action_bias": "allow_add",
+            "ai_recommended_target_position_pct": 0.10,
+            "ai_recommended_max_position_pct": 0.15,
+            "ai_recommended_target_position_range_pct": [0.08, 0.12],
+        }
+        judge_card = DebateJudgeCard(symbol="AAPL", asset_stance="bullish", conviction="medium", winner="bull", reasoning_summary="偏多。")
+
+        card, _trace = TradeDecisionTradePlanAgent(FakeLLM()).generate(card_pack, judge_card)
+
+        assert card.portfolio_action == "add_small"
+        assert card.target_position_pct == pytest.approx(0.10)
+        assert "ai_policy_underweight_supports_action_promoted_from_hold_like" in card.risk_reward_assessment["sanitization_notes"]
+
+    def test_trade_plan_agent_blocks_add_when_ai_overweight(self):
+        from app.services.trade_decision_trade_plan_agent import TradeDecisionTradePlanAgent
+
+        class FakeLLM:
+            def chat(self, messages, **kwargs):
+                return """
+                {
+                  "asset_stance": "bullish",
+                  "portfolio_action": "add_small",
+                  "action_reason_type": "asset_view",
+                  "current_position_pct": 0.16,
+                  "target_position_pct": 0.20,
+                  "adjustment_pct": 0.04,
+                  "suggested_cash_amount": 4000,
+                  "max_position_pct": 0.18,
+                  "execution_conditions": ["趋势确认"],
+                  "invalidation_conditions": ["跌破失效位"],
+                  "recheck_triggers": ["财报"],
+                  "risk_reward_assessment": {"entry_quality": "medium"},
+                  "data_limitations": [],
+                  "summary": "误加仓。"
+                }
+                """
+
+        snapshot = _make_snapshot(is_holding=True)
+        snapshot.position_pct = 0.16
+        card_pack = _make_card_pack(snapshot, all_fallback=False)
+        card_pack.ai_policy_assessment = {
+            "status": "evaluated",
+            "ai_position_stance": "overweight",
+            "recommended_action_bias": "hold_no_add",
+            "ai_recommended_target_position_pct": 0.12,
+            "ai_recommended_max_position_pct": 0.18,
+        }
+        judge_card = DebateJudgeCard(symbol="AAPL", asset_stance="bullish", conviction="medium", winner="bull", reasoning_summary="偏多。")
+
+        card, _trace = TradeDecisionTradePlanAgent(FakeLLM()).generate(card_pack, judge_card)
+
+        assert card.portfolio_action == "hold_no_add"
+        assert card.target_position_pct == pytest.approx(0.16)
+
 
 # === Test: Compose decision data quality constraints ===
 
@@ -1020,6 +1259,11 @@ class TestComposeDecisionConstraints:
         assert output["trade_plan"]["portfolio_action"] == "add_on_pullback"
         assert output["asset_stance"] == "bullish"
         assert output["action_reason_type"] == "asset_view_and_account_fit"
+        assert output["draft_action"] == "add_on_pullback"
+        assert output["risk_adjusted_action"] == output["action"]
+        assert output["final_action"] == output["action"]
+        assert output["action_downgrade_chain"][0]["from"] == "add_on_pullback"
+        assert output["action_downgrade_chain"][0]["to"] == output["action"]
 
 
 class TestPersistDecisionMultiAgentSkeleton:

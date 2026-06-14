@@ -67,6 +67,8 @@ from app.services.daily_review_symbol_evidence_agent import DailyReviewSymbolEvi
 from app.services.daily_account_snapshot_service import DailyAccountSnapshotService
 from app.services.dividend_service import DividendService
 from app.services.email_service import EmailService
+from app.services.investment_policy_repository import InvestmentPolicyRepository
+from app.services.investment_policy_service import InvestmentPolicyService
 from app.services.llm_service import LLMService
 from app.services.llm_call_metrics_repository import LLMCallMetricsRepository
 from app.services.llm_call_metrics_service import LLMCallMetricsService
@@ -76,6 +78,7 @@ from app.services.longbridge_oauth_token_service import LongbridgeOAuthTokenServ
 from app.services.trade_decision_agent import TradeDecisionAgent
 from app.services.trade_decision_evidence import TradeDecisionEvidenceBuilder
 from app.services.trade_decision_metrics import TradeDecisionMetricsCalculator
+from app.services.trade_decision_outcome_replay import TradeDecisionOutcomePriceProvider, TradeDecisionOutcomeReplayService
 from app.services.trade_decision_repository import TradeDecisionRepository
 from app.services.risk_assessment_agent import RiskAssessmentAgent
 from app.services.risk_assessment_repository import RiskAssessmentRepository
@@ -156,6 +159,16 @@ def get_admin_prompt_service(
     repository: AdminPromptRepository = Depends(get_admin_prompt_repository),
 ) -> AdminPromptService:
     return AdminPromptService(repository)
+
+
+def get_investment_policy_repository() -> InvestmentPolicyRepository:
+    return InvestmentPolicyRepository(get_es_client(), get_settings())
+
+
+def get_investment_policy_service(
+    repository: InvestmentPolicyRepository = Depends(get_investment_policy_repository),
+) -> InvestmentPolicyService:
+    return InvestmentPolicyService(repository)
 
 
 def get_email_service() -> EmailService:
@@ -494,6 +507,13 @@ def get_trade_decision_repository() -> TradeDecisionRepository:
     return TradeDecisionRepository(get_es_client(), get_settings())
 
 
+def get_trade_decision_outcome_replay_service() -> TradeDecisionOutcomeReplayService:
+    return TradeDecisionOutcomeReplayService(
+        get_trade_decision_repository(),
+        TradeDecisionOutcomePriceProvider(get_es_client(), get_settings()),
+    )
+
+
 def get_daily_position_review_repository() -> DailyPositionReviewRepository:
     return DailyPositionReviewRepository(get_es_client(), get_settings())
 
@@ -546,6 +566,7 @@ def get_trade_review_agent() -> TradeReviewAgent:
         monitoring_service=get_account_copilot_monitoring_service(
             repository=get_account_copilot_monitoring_repository(),
         ),
+        investment_policy_service=get_investment_policy_service(),
     )
 
 

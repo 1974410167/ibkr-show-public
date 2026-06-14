@@ -11,6 +11,15 @@ from app.services.trade_decision_sub_agents import (
     FUNDAMENTAL_VALUATION_SYSTEM_PROMPT,
     MARKET_TREND_SYSTEM_PROMPT,
 )
+from app.services.trade_decision_debate_agents import (
+    BEAR_REBUTTAL_PROMPT,
+    BEAR_THESIS_PROMPT,
+    BULL_REBUTTAL_PROMPT,
+    BULL_THESIS_PROMPT,
+    DEBATE_JUDGE_PROMPT,
+)
+from app.services.trade_decision_trade_plan_agent import TRADE_PLAN_PROMPT
+from app.services.trade_decision_policy_assessment_agent import AI_POLICY_ASSESSMENT_PROMPT
 from app.agents.trade_review_graph.prompts import (
     TRADE_REVIEW_BEHAVIOR_PATTERN_SYSTEM_PROMPT,
     TRADE_REVIEW_MAIN_SYSTEM_PROMPT,
@@ -118,6 +127,62 @@ PROMPT_DEFINITIONS: dict[str, PromptDefinitionRecord] = {
         agent_name="event_catalyst_sub_agent",
         description="交易决策事件催化子 Agent 的 system prompt。",
         default_content=EVENT_CATALYST_SYSTEM_PROMPT,
+    ),
+    "trade_decision_bull_thesis": PromptDefinitionRecord(
+        prompt_key="trade_decision_bull_thesis",
+        display_name="Trade Decision Bull Thesis",
+        module_name="trade_decision",
+        agent_name="bull_thesis_sub_agent",
+        description="交易决策多头立论子 Agent 的 system prompt。",
+        default_content=BULL_THESIS_PROMPT,
+    ),
+    "trade_decision_bear_thesis": PromptDefinitionRecord(
+        prompt_key="trade_decision_bear_thesis",
+        display_name="Trade Decision Bear Thesis",
+        module_name="trade_decision",
+        agent_name="bear_thesis_sub_agent",
+        description="交易决策空头/谨慎立论子 Agent 的 system prompt。",
+        default_content=BEAR_THESIS_PROMPT,
+    ),
+    "trade_decision_bull_rebuttal": PromptDefinitionRecord(
+        prompt_key="trade_decision_bull_rebuttal",
+        display_name="Trade Decision Bull Rebuttal",
+        module_name="trade_decision",
+        agent_name="bull_rebuttal_sub_agent",
+        description="交易决策多头反驳子 Agent 的 system prompt。",
+        default_content=BULL_REBUTTAL_PROMPT,
+    ),
+    "trade_decision_bear_rebuttal": PromptDefinitionRecord(
+        prompt_key="trade_decision_bear_rebuttal",
+        display_name="Trade Decision Bear Rebuttal",
+        module_name="trade_decision",
+        agent_name="bear_rebuttal_sub_agent",
+        description="交易决策空头/谨慎反驳子 Agent 的 system prompt。",
+        default_content=BEAR_REBUTTAL_PROMPT,
+    ),
+    "trade_decision_debate_judge": PromptDefinitionRecord(
+        prompt_key="trade_decision_debate_judge",
+        display_name="Trade Decision Debate Judge",
+        module_name="trade_decision",
+        agent_name="debate_judge_sub_agent",
+        description="交易决策多空辩论裁判子 Agent 的 system prompt。",
+        default_content=DEBATE_JUDGE_PROMPT,
+    ),
+    "trade_decision_ai_policy_assessment": PromptDefinitionRecord(
+        prompt_key="trade_decision_ai_policy_assessment",
+        display_name="Trade Decision AI Policy Assessment",
+        module_name="trade_decision",
+        agent_name="ai_policy_assessment_sub_agent",
+        description="交易决策 AI 投资策略/仓位评估子 Agent 的 system prompt。",
+        default_content=AI_POLICY_ASSESSMENT_PROMPT,
+    ),
+    "trade_decision_trade_plan": PromptDefinitionRecord(
+        prompt_key="trade_decision_trade_plan",
+        display_name="Trade Decision Trade Plan",
+        module_name="trade_decision",
+        agent_name="trade_plan_sub_agent",
+        description="交易决策交易计划子 Agent 的 system prompt。",
+        default_content=TRADE_PLAN_PROMPT,
     ),
 }
 

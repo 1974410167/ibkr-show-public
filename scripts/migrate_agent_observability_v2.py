@@ -6,7 +6,7 @@ Elasticsearch fields. This script copies historical _source documents from the
 old trace/replay indices into the configured v2 indices.
 
 Usage:
-    cd /root/ibkr_show
+    cd /path/to/ibkr-trade-agent
     cd ibkr_show_backend && ../.venv/bin/python3 ../scripts/migrate_agent_observability_v2.py --dry-run
     cd ibkr_show_backend && ../.venv/bin/python3 ../scripts/migrate_agent_observability_v2.py
 """

@@ -6,7 +6,7 @@ look up the matching agent_replay_snapshot by run_id or by
 (symbol + agent_name + time proximity) and patch the document.
 
 Usage:
-    cd /root/ibkr_show
+    cd /path/to/ibkr-trade-agent
     cd ibkr_show_backend && ../.venv/bin/python3 ../scripts/backfill_trade_decision_replays.py [--dry-run] [--limit N]
 """
 

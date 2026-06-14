@@ -22,6 +22,7 @@ from app.api.routes.daily_account_snapshot_email import router as daily_account_
 from app.api.routes.daily_position_review import router as daily_position_review_router
 from app.api.routes.dividends import router as dividends_router
 from app.api.routes.health import router as health_router
+from app.api.routes.investment_policy import router as investment_policy_router
 from app.api.routes.longbridge import router as longbridge_router
 from app.api.routes.market_events import router as market_events_router
 from app.api.routes.positions import router as positions_router
@@ -54,6 +55,7 @@ api_router.include_router(charts_router)
 api_router.include_router(daily_account_snapshot_email_router)
 api_router.include_router(daily_position_review_router)
 api_router.include_router(dividends_router)
+api_router.include_router(investment_policy_router)
 api_router.include_router(longbridge_router)
 api_router.include_router(market_events_router)
 api_router.include_router(positions_router)

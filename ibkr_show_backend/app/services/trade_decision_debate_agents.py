@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from app.agents.prompt_runtime import resolve_runtime_prompt
 from app.agents.graph.node_utils import strip_thinking_tags
 from app.agents.structured_output import StructuredOutputRuntime
 from app.agents.trade_decision_cards import (
@@ -47,19 +48,27 @@ class TradeDecisionDebateAgentBase:
         llm_service: Any,
         *,
         monitoring_service: Any | None = None,
+        prompt_service: Any | None = None,
         run_id: str | None = None,
         task_id: str | None = None,
     ) -> None:
         self.llm_service = llm_service
         self.monitoring_service = monitoring_service
+        self.prompt_service = prompt_service
         self.run_id = run_id
         self.task_id = task_id
+        self._last_prompt_metadata: dict[str, Any] | None = None
         self.runtime = StructuredOutputRuntime(
             llm_service,
             monitoring_service=monitoring_service,
             default_temperature=0.0,
             default_max_tokens=self.max_tokens,
         )
+
+    def _resolve_system_prompt(self, prompt_key: str, fallback: str) -> str:
+        prompt, metadata = resolve_runtime_prompt(self.prompt_service, prompt_key, fallback)
+        self._last_prompt_metadata = metadata
+        return prompt
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -149,7 +158,10 @@ class TradeDecisionDebateAgentBase:
             fallback_used=status == "fallback",
             fallback_reason=fallback_reason,
             structured_output=structured_output,
-            prompt_metadata={"contract_name": (result.metadata.get("contract_name") if result is not None else None)},
+            prompt_metadata={
+                **(self._last_prompt_metadata or {}),
+                "contract_name": (result.metadata.get("contract_name") if result is not None else None),
+            },
         )
 
     def _messages(self, system_prompt: str, context: dict) -> list[dict[str, str]]:
@@ -168,6 +180,7 @@ class BullThesisAgent(TradeDecisionDebateAgentBase):
             card_pack,
             node_name="bull_thesis",
             stance="bullish",
+            prompt_key="trade_decision_bull_thesis",
             system_prompt=BULL_THESIS_PROMPT,
         )
 
@@ -181,6 +194,7 @@ class BearThesisAgent(TradeDecisionDebateAgentBase):
             card_pack,
             node_name="bear_thesis",
             stance="bearish",
+            prompt_key="trade_decision_bear_thesis",
             system_prompt=BEAR_THESIS_PROMPT,
         )
 
@@ -200,6 +214,7 @@ class BullRebuttalAgent(TradeDecisionDebateAgentBase):
             bull_thesis,
             bear_thesis,
             node_name="bull_rebuttal",
+            prompt_key="trade_decision_bull_rebuttal",
             system_prompt=BULL_REBUTTAL_PROMPT,
         )
 
@@ -219,6 +234,7 @@ class BearRebuttalAgent(TradeDecisionDebateAgentBase):
             bull_thesis,
             bear_thesis,
             node_name="bear_rebuttal",
+            prompt_key="trade_decision_bear_rebuttal",
             system_prompt=BEAR_REBUTTAL_PROMPT,
         )
 
@@ -242,8 +258,9 @@ class DebateJudgeAgent(TradeDecisionDebateAgentBase):
             bear_rebuttal=self._safe_card_dict(bear_rebuttal),
         )
         contract = build_debate_judge_contract()
+        system_prompt = self._resolve_system_prompt("trade_decision_debate_judge", DEBATE_JUDGE_PROMPT)
         result = self.runtime.generate(
-            self._messages(DEBATE_JUDGE_PROMPT, context),
+            self._messages(system_prompt, context),
             contract,
             temperature=0.0,
             max_tokens=self.max_tokens,
@@ -264,12 +281,14 @@ def _generate_thesis(
     *,
     node_name: str,
     stance: str,
+    prompt_key: str,
     system_prompt: str,
 ) -> tuple[DebateThesisCard, TradeDecisionSubAgentTrace]:
     context = agent._build_common_context(card_pack)
     contract = build_debate_thesis_contract(node_name)
+    resolved_prompt = agent._resolve_system_prompt(prompt_key, system_prompt)
     result = agent.runtime.generate(
-        agent._messages(system_prompt, context),
+        agent._messages(resolved_prompt, context),
         contract,
         temperature=0.0,
         max_tokens=agent.max_tokens,
@@ -291,6 +310,7 @@ def _generate_rebuttal(
     bear_thesis: DebateThesisCard,
     *,
     node_name: str,
+    prompt_key: str,
     system_prompt: str,
 ) -> tuple[DebateRebuttalCard, TradeDecisionSubAgentTrace]:
     context = agent._build_common_context(
@@ -299,8 +319,9 @@ def _generate_rebuttal(
         bear_thesis=agent._safe_card_dict(bear_thesis),
     )
     contract = build_debate_rebuttal_contract(node_name)
+    resolved_prompt = agent._resolve_system_prompt(prompt_key, system_prompt)
     result = agent.runtime.generate(
-        agent._messages(system_prompt, context),
+        agent._messages(resolved_prompt, context),
         contract,
         temperature=0.0,
         max_tokens=agent.max_tokens,
@@ -423,23 +444,48 @@ def _limit_list(value: Any, limit: int) -> list:
 BULL_THESIS_PROMPT = """你是多头研究员。只基于输入证据构建标的级看多论证，不给交易建议。
 规则：不得调用工具，不得编造事实，不得输出 Markdown，只输出 JSON object。
 禁止输出建仓、加仓、减仓、清仓、目标仓位、建议金额。账户上下文只作背景。
-必须引用 evidence_refs，且只能来自 allowed_evidence_refs。证据不足时降低 conviction 并写入 data_limitations。"""
+必须引用 evidence_refs，且只能来自 allowed_evidence_refs。证据不足时降低 conviction 并写入 data_limitations。
+输出字段必须包含 agent_name、stance、conviction、summary、core_claims、evidence_refs、weak_points、risk_flags、data_limitations。
+输出示例:
+{"agent_name":"bull_thesis","stance":"bullish","conviction":"medium","summary":"趋势证据改善且基本面质量仍有支撑，但事件窗口和估值风险使看多置信度保持中等。","core_claims":["市场趋势卡显示相对基准表现转强","基本面估值卡显示盈利质量稳定"],"evidence_refs":["market_trend_card","fundamental_valuation_card"],"weak_points":["估值仍依赖增长兑现","近期事件风险可能放大波动"],"risk_flags":["event_risk_window","valuation_sensitivity"],"data_limitations":[]}
+数据不足示例:
+{"agent_name":"bull_thesis","stance":"bullish","conviction":"low","summary":"公开市场证据不足，只能保留低置信度正面观察，不能形成强看多结论。","core_claims":[],"evidence_refs":[],"weak_points":["缺少足够证据支持看多"],"risk_flags":["insufficient_public_data"],"data_limitations":["market_trend_card 或 fundamental_valuation_card 缺失"]}"""
 
 BEAR_THESIS_PROMPT = """你是空头/谨慎派研究员。只基于输入证据构建为什么不应轻易看多的最强论证，不给交易建议。
 规则：不得调用工具，不得编造不存在的坏消息，不得输出 Markdown，只输出 JSON object。
 禁止输出减仓、清仓、卖出、目标仓位、建议金额。必须承认证据中的正面事实。
-必须引用 evidence_refs，且只能来自 allowed_evidence_refs。证据不足时降低 conviction 并写入 data_limitations。"""
+必须引用 evidence_refs，且只能来自 allowed_evidence_refs。证据不足时降低 conviction 并写入 data_limitations。
+输出字段必须包含 agent_name、stance、conviction、summary、core_claims、evidence_refs、weak_points、risk_flags、data_limitations。
+输出示例:
+{"agent_name":"bear_thesis","stance":"bearish","conviction":"medium","summary":"虽然趋势有改善，但估值安全边际不足且事件催化不确定，不应把短期动能直接等同于可靠上行。","core_claims":["估值对业绩兑现敏感","事件催化强度不足以抵消回撤风险"],"evidence_refs":["fundamental_valuation_card","event_catalyst_card","market_event_context_card"],"weak_points":["若财报或评级明显超预期，谨慎观点可能失效"],"risk_flags":["high_valuation","catalyst_uncertainty"],"data_limitations":[]}
+数据不足示例:
+{"agent_name":"bear_thesis","stance":"bearish","conviction":"low","summary":"证据不足时不能编造负面事实，只能指出缺少可靠看多依据并保持低置信度谨慎。","core_claims":["公开证据不足，不能确认上行质量"],"evidence_refs":[],"weak_points":["缺少明确负面证据，不能高置信度 bearish"],"risk_flags":["insufficient_public_data"],"data_limitations":["新闻、估值或趋势证据缺失"]}"""
 
 BULL_REBUTTAL_PROMPT = """你是多头研究员，已经看到空头立论。只基于输入证据和双方立论反驳，不新增证据。
 承认成立的风险，反驳被夸大的部分，强化仍支持看多的证据，给出 final_conviction。
-不得调用工具、不得编造事实、不得输出交易动作、不得输出 Markdown，只输出 JSON object。"""
+不得调用工具、不得编造事实、不得输出交易动作、不得输出 Markdown，只输出 JSON object。
+输出字段必须包含 agent_name、summary、accepted_opponent_points、rejected_opponent_points、reinforced_arguments、final_conviction、data_limitations。
+输出示例:
+{"agent_name":"bull_rebuttal","summary":"空头关于估值和事件风险的提醒成立，但现有趋势与基本面证据仍支持温和看多，而不是完全回避。","accepted_opponent_points":["估值对增长放缓敏感","事件窗口可能增加短期波动"],"rejected_opponent_points":["短期波动不等于趋势已经破坏","估值偏高不能单独否定公司质量"],"reinforced_arguments":["相对基准强势仍是有效正面证据","盈利质量稳定降低了部分下行风险"],"final_conviction":"medium","data_limitations":[]}
+数据不足示例:
+{"agent_name":"bull_rebuttal","summary":"由于双方证据都不完整，多头只能承认不确定性并维持低置信度。","accepted_opponent_points":["公开数据不足会降低结论可靠性"],"rejected_opponent_points":[],"reinforced_arguments":[],"final_conviction":"low","data_limitations":["双方立论缺少可验证证据"]}"""
 
 BEAR_REBUTTAL_PROMPT = """你是空头/谨慎派研究员，已经看到多头立论。只基于输入证据和双方立论反驳，不新增证据。
 承认成立的机会，反驳证据不足或过度乐观的部分，强化仍需谨慎的风险，给出 final_conviction。
-不得调用工具、不得编造事实、不得输出交易动作或目标仓位、不得输出 Markdown，只输出 JSON object。"""
+不得调用工具、不得编造事实、不得输出交易动作或目标仓位、不得输出 Markdown，只输出 JSON object。
+输出字段必须包含 agent_name、summary、accepted_opponent_points、rejected_opponent_points、reinforced_arguments、final_conviction、data_limitations。
+输出示例:
+{"agent_name":"bear_rebuttal","summary":"多头对趋势改善的引用有效，但证据尚不足以支持高置信度看多，尤其在估值和事件窗口未确认前。","accepted_opponent_points":["趋势改善是真实正面信号","基本面质量仍有支撑"],"rejected_opponent_points":["相对强势不足以证明风险收益已经占优","缺少明确催化时不应上调 conviction"],"reinforced_arguments":["估值敏感性仍是主要约束","事件不确定性要求保持保守"],"final_conviction":"medium","data_limitations":[]}
+数据不足示例:
+{"agent_name":"bear_rebuttal","summary":"多头证据不足，但空头也不能编造坏消息，因此最终只维持低置信度谨慎。","accepted_opponent_points":[],"rejected_opponent_points":["没有证据时不能把希望当作结论"],"reinforced_arguments":["数据不足本身就是降低仓促看多置信度的理由"],"final_conviction":"low","data_limitations":["缺少可验证的趋势、估值或事件证据"]}"""
 
 DEBATE_JUDGE_PROMPT = """你是辩论裁判。基于证据卡、多头立论、空头立论、多头反驳、空头反驳，判断标的级观点。
 只输出 asset_stance、conviction、winner、accepted_bull_points、accepted_bear_points、key_uncertainties、reasoning_summary、data_limitations。
 禁止输出是否建仓、加仓、减仓、清仓、目标仓位、建议金额。不得调用工具、不得编造事实、不得输出 Markdown，只输出 JSON object。
 如果公开市场数据大面积 fallback 或证据质量低，asset_stance 必须 insufficient_data 或 neutral，conviction 必须 low。
-多空证据都强时倾向 neutral 和 balanced；账户仓位过高不等于标的 bearish；宏观事件高风险应降低 conviction。"""
+多空证据都强时倾向 neutral 和 balanced；账户仓位过高不等于标的 bearish；宏观事件高风险应降低 conviction。
+输出字段必须包含 asset_stance、conviction、winner、accepted_bull_points、accepted_bear_points、key_uncertainties、reasoning_summary、data_limitations。
+输出示例:
+{"asset_stance":"neutral","conviction":"medium","winner":"balanced","accepted_bull_points":["趋势改善有证据支持","基本面质量没有明显恶化"],"accepted_bear_points":["估值对增长放缓敏感","事件窗口可能带来回撤"],"key_uncertainties":["下一次财报是否验证增长","相对强势能否延续"],"reasoning_summary":"多空证据都成立，当前更适合给出中性标的观点，等待催化和风险收益进一步明朗。","data_limitations":[]}
+数据不足示例:
+{"asset_stance":"insufficient_data","conviction":"low","winner":"insufficient_data","accepted_bull_points":[],"accepted_bear_points":["公开市场证据不足，不能可靠判断标的方向"],"key_uncertainties":["行情、估值或事件数据缺失","无法验证多头或空头主张"],"reasoning_summary":"输入证据质量不足，不能输出明确 bullish 或 bearish，应降级为 insufficient_data。","data_limitations":["公开市场数据大面积缺失或 fallback"]}"""

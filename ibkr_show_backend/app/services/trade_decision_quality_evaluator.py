@@ -14,12 +14,14 @@ QUALITY_VERSION = "trade_decision_quality_v1"
 
 EXPECTED_GRAPH_NODES = [
     "build_account_facts",
+    "load_user_investment_policy",
     "account_fit",
     "market_trend",
     "fundamental_valuation",
     "event_catalyst",
     "market_event_context",
     "build_card_pack",
+    "ai_policy_assessment",
     "bull_thesis",
     "bear_thesis",
     "bull_rebuttal",
@@ -31,7 +33,9 @@ EXPECTED_GRAPH_NODES = [
 ]
 CORE_GRAPH_NODES = {
     "build_account_facts",
+    "load_user_investment_policy",
     "build_card_pack",
+    "ai_policy_assessment",
     "debate_judge",
     "trade_plan",
     "compose_decision",
@@ -44,6 +48,7 @@ TOOL_FREE_LLM_NODES = {
     "bear_rebuttal",
     "debate_judge",
     "trade_plan",
+    "ai_policy_assessment",
 }
 VALID_NODE_STATUSES = {"success", "completed", "fallback", "failed"}
 ADD_LIKE_ACTIONS = {"add", "add_small", "add_batch", "add_on_pullback", "add_right_side"}
@@ -68,6 +73,8 @@ class TradeDecisionQualityEvaluator:
             ("asset_action_consistency", self._check_asset_action_consistency),
             ("position_consistency", self._check_position_consistency),
             ("risk_gate_integrity", self._check_risk_gate_integrity),
+            ("ai_policy_assessment_integrity", self._check_ai_policy_assessment_integrity),
+            ("action_calibration_integrity", self._check_action_calibration_integrity),
             ("risk_reward_source_integrity", self._check_risk_reward_source_integrity),
             ("evidence_card_completeness", self._check_evidence_card_completeness),
             ("output_contract_integrity", self._check_output_contract_integrity),
@@ -361,6 +368,142 @@ class TradeDecisionQualityEvaluator:
             "flags": flags,
         }
 
+    def _check_ai_policy_assessment_integrity(self, doc: dict) -> dict:
+        assessment = _dict(doc.get("ai_policy_assessment")) or _dict(_card_pack(doc).get("ai_policy_assessment"))
+        action = str(doc.get("action") or "")
+        advice = _dict(doc.get("position_advice"))
+        target = _float(advice.get("suggested_target_position_pct"))
+        user_summary = _dict(doc.get("user_investment_policy_summary"))
+        hard_failures: list[str] = []
+        warnings: list[str] = []
+        flags: list[str] = []
+        if not assessment:
+            hard_failures.append("ai_policy_assessment_missing")
+            flags.append("ai_policy_assessment_missing")
+            return {
+                "passed": False,
+                "status": None,
+                "hard_failures": hard_failures,
+                "warnings": warnings,
+                "flags": flags,
+            }
+        status = str(assessment.get("status") or "")
+        if status == "evaluated":
+            required = [
+                "ai_assessed_asset_role",
+                "ai_role_confidence",
+                "ai_recommended_target_position_pct",
+                "ai_recommended_max_position_pct",
+                "ai_position_stance",
+                "challenge_level",
+                "recommended_action_bias",
+            ]
+            missing = [key for key in required if assessment.get(key) in (None, "")]
+            if missing:
+                hard_failures.extend(f"ai_policy_field_missing:{key}" for key in missing)
+                flags.append("ai_policy_evaluated_missing_fields")
+            min_pct = _float(assessment.get("ai_recommended_min_position_pct"))
+            ai_target = _float(assessment.get("ai_recommended_target_position_pct"))
+            ai_max = _float(assessment.get("ai_recommended_max_position_pct"))
+            if min_pct is not None and ai_target is not None and ai_max is not None and not (min_pct <= ai_target <= ai_max):
+                hard_failures.append("ai_policy_position_order_invalid")
+                flags.append("ai_policy_position_order_invalid")
+            target_range = assessment.get("ai_recommended_target_position_range_pct")
+            if isinstance(target_range, list) and len(target_range) == 2:
+                low = _float(target_range[0])
+                high = _float(target_range[1])
+                if low is not None and high is not None and low > high:
+                    hard_failures.append("ai_policy_target_range_invalid")
+                    flags.append("ai_policy_target_range_invalid")
+            if action in ADD_LIKE_ACTIONS and ai_max is not None and target is not None and target > ai_max + 1e-6:
+                hard_failures.append("add_like_target_above_ai_policy_max")
+                flags.append("add_like_over_ai_max")
+            if user_summary and not assessment.get("prompt_key"):
+                warnings.append("ai_policy_prompt_key_missing")
+                flags.append("ai_policy_prompt_metadata_missing")
+        elif status == "fallback":
+            warnings.append("ai_policy_assessment_fallback")
+            flags.append("ai_policy_fallback")
+            challenge = str(assessment.get("challenge_level") or "")
+            if challenge not in {"not_evaluated", "risk_warning"}:
+                hard_failures.append("ai_policy_fallback_invalid_challenge_level")
+                flags.append("ai_policy_fallback_invalid")
+        elif status != "not_evaluated":
+            warnings.append(f"ai_policy_unknown_status:{status}")
+            flags.append("ai_policy_unknown_status")
+        if action in ADD_LIKE_ACTIONS and not assessment.get("ai_recommended_max_position_pct") and user_summary.get("user_preferred_max_position_pct"):
+            warnings.append("add_like_action_without_ai_policy_max_while_user_preference_present")
+            flags.append("trade_plan_may_be_using_user_preference_without_ai_assessment")
+        return {
+            "passed": not hard_failures,
+            "status": status,
+            "hard_failures": hard_failures,
+            "warnings": warnings,
+            "flags": flags,
+        }
+
+    def _check_action_calibration_integrity(self, doc: dict) -> dict:
+        action = str(doc.get("final_action") or doc.get("action") or "")
+        draft_action = str(doc.get("draft_action") or _dict(doc.get("trade_plan")).get("portfolio_action") or "")
+        risk_gate = _dict(doc.get("risk_gate"))
+        gate_reasons = _list(risk_gate.get("gate_reasons"))
+        risk_flags = set(_list(risk_gate.get("risk_flags")))
+        trade_plan = _dict(doc.get("trade_plan"))
+        sanitization_notes = _list(_dict(trade_plan.get("risk_reward_assessment")).get("sanitization_notes"))
+        assessment = _dict(doc.get("ai_policy_assessment"))
+        pack = _card_pack(doc)
+        fund = _dict(pack.get("fundamental_valuation_card"))
+        mkt = _dict(pack.get("market_trend_card"))
+        fundamental_status = str(fund.get("fundamental_status") or "")
+        trend_break = str(mkt.get("trend_break_level") or "")
+        hard_failures: list[str] = []
+        warnings: list[str] = []
+        flags: list[str] = []
+
+        if action in ADD_LIKE_ACTIONS and fundamental_status == "red":
+            hard_failures.append("add_like_with_fundamental_red")
+            flags.append("hard_risk_add_like")
+        if action in ADD_LIKE_ACTIONS and trend_break == "severe":
+            hard_failures.append("add_like_with_trend_break_severe")
+            flags.append("hard_risk_add_like")
+
+        ai_supports_add = (
+            assessment.get("status") == "evaluated"
+            and assessment.get("ai_position_stance") == "underweight"
+            and assessment.get("recommended_action_bias") in {"allow_add", "prefer_pullback_add"}
+        )
+        has_hard_block = bool(risk_gate.get("blocked")) or bool(risk_flags & {
+            "insufficient_data",
+            "fundamental_red_action",
+            "fundamental_red_blocked",
+            "trend_break_severe_blocked",
+            "trend_break_broken_blocked",
+            "rr_below_one",
+            "missing_position_limit",
+            "position_limit_reached",
+            "panic_sell_blocked",
+            "target_above_ai_policy_max",
+            "ai_policy_max_position_downgrade",
+        })
+        if ai_supports_add and not has_hard_block and action in CONSERVATIVE_ACTIONS:
+            warnings.append("ai_underweight_allow_add_but_final_hold_like")
+            flags.append("over_conservative_hold_like")
+        if action in {"hold_no_add", "wait"} and not gate_reasons and not sanitization_notes:
+            warnings.append("hold_like_without_clear_blocking_reason")
+            flags.append("hold_like_without_clear_block")
+        soft_only = risk_flags and risk_flags <= {"weak_catalyst_downgrade", "weak_catalyst_soft_warning", "weak_catalyst_downgrade_to_pullback"}
+        if draft_action in ADD_LIKE_ACTIONS and action in CONSERVATIVE_ACTIONS and soft_only and assessment.get("recommended_action_bias") == "prefer_pullback_add":
+            warnings.append("soft_risk_over_downgraded_add")
+            flags.append("soft_risk_over_downgraded_add")
+        return {
+            "passed": not hard_failures,
+            "draft_action": draft_action,
+            "final_action": action,
+            "hard_failures": hard_failures,
+            "warnings": warnings,
+            "flags": flags,
+        }
+
     def _check_risk_reward_source_integrity(self, doc: dict) -> dict:
         metadata_rr = _dict(_dict(doc.get("metadata")).get("risk_reward"))
         card = _dict(_card_pack(doc).get("risk_reward_card"))
@@ -427,6 +570,10 @@ class TradeDecisionQualityEvaluator:
             "overall_score",
             "rating",
             "action",
+            "draft_action",
+            "risk_adjusted_action",
+            "final_action",
+            "action_downgrade_chain",
             "confidence",
             "decision_summary",
             "score_detail",
@@ -442,6 +589,8 @@ class TradeDecisionQualityEvaluator:
             "asset_debate",
             "trade_plan",
             "risk_gate",
+            "user_investment_policy_summary",
+            "ai_policy_assessment",
         ]
         missing = [key for key in required if key not in doc]
         return {

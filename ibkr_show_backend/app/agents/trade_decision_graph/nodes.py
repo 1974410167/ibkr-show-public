@@ -182,6 +182,100 @@ def make_build_account_facts_node(deps):
     return build_account_facts_node
 
 
+def _fallback_user_investment_policy(symbol: str) -> dict:
+    """Build user-preference shaped fallback from the code default thesis."""
+    from app.services.investment_thesis import get_thesis
+
+    thesis = get_thesis(symbol)
+    preference = {
+        "asset_role": thesis.role,
+        "conviction": thesis.risk_class,
+        "user_preferred_target_position_pct": thesis.target_position_pct,
+        "user_preferred_max_position_pct": thesis.max_position_pct,
+        "user_preferred_min_position_pct": 0.0,
+        "add_rules": list(thesis.add_rules),
+        "no_add_triggers": list(thesis.no_add_triggers),
+        "sell_triggers": list(thesis.sell_triggers),
+        "hard_constraints": [],
+        "soft_preferences": list(thesis.hold_rules),
+        "notes": "\n".join(thesis.core_thesis),
+        "enabled": True,
+        "ai_review_status": "unknown",
+        "ai_review_summary": None,
+        "ai_review_updated_at": None,
+        "disclaimer": "这是用户主观偏好，不是 AI 最终仓位建议",
+    }
+    return {
+        "source": "fallback",
+        "symbol": thesis.symbol,
+        "user_investment_preference": preference,
+        # Compatibility fields for old display/fallback paths only.
+        "role": thesis.role,
+        "risk_class": thesis.risk_class,
+        "target_position_pct": thesis.target_position_pct,
+        "max_position_pct": thesis.max_position_pct,
+        "min_position_pct": 0.0,
+        "add_rules": list(thesis.add_rules),
+        "no_add_triggers": list(thesis.no_add_triggers),
+        "sell_triggers": list(thesis.sell_triggers),
+        "core_thesis": list(thesis.core_thesis),
+        "hold_rules": list(thesis.hold_rules),
+        "review_frequency": thesis.review_frequency,
+        "metadata": {"policy_type": "investment_policy", "fallback": True},
+    }
+
+
+def make_load_user_investment_policy_node(deps):
+    def load_user_investment_policy_node(state: dict) -> dict:
+        trace = start_node_trace("load_user_investment_policy")
+        symbol = state.get("normalized_symbol") or state.get("symbol") or ""
+        try:
+            service = getattr(deps, "investment_policy_service", None)
+            if service is None:
+                raise RuntimeError("investment_policy_service_unavailable")
+            policy = service.get_policy_for_symbol(symbol)
+            trace = finish_node_trace(trace, "success")
+            return {
+                "user_investment_policy": policy,
+                "node_traces": [trace],
+            }
+        except Exception as exc:
+            reason = str(exc)[:200]
+            try:
+                policy = _fallback_user_investment_policy(symbol)
+            except Exception:
+                policy = {
+                    "source": "fallback",
+                    "symbol": symbol,
+                    "user_investment_preference": {
+                        "asset_role": "unknown",
+                        "conviction": "low",
+                        "user_preferred_target_position_pct": None,
+                        "user_preferred_max_position_pct": 0.05,
+                        "user_preferred_min_position_pct": 0.0,
+                        "add_rules": [],
+                        "no_add_triggers": [],
+                        "sell_triggers": [],
+                        "hard_constraints": [],
+                        "soft_preferences": [],
+                        "notes": "",
+                        "enabled": True,
+                        "ai_review_status": "unknown",
+                        "ai_review_summary": None,
+                        "ai_review_updated_at": None,
+                        "disclaimer": "这是用户主观偏好，不是 AI 最终仓位建议",
+                    },
+                }
+            trace = finish_node_trace(trace, "fallback", fallback_used=True, fallback_reason=reason)
+            return {
+                "user_investment_policy": policy,
+                "data_limitations": ["用户投资偏好读取失败，已使用默认模板"],
+                "node_traces": [trace],
+            }
+
+    return load_user_investment_policy_node
+
+
 def make_account_fit_node(deps):
     def account_fit_node(state: dict) -> dict:
         trace = start_node_trace("account_fit")
@@ -649,6 +743,7 @@ def make_build_card_pack_node(deps):
                 risk_reward_card=None,
                 data_quality_summary=overall_quality,
                 subagent_traces=subagent_traces,
+                user_investment_policy=state.get("user_investment_policy"),
             )
 
             result: dict[str, Any] = {
@@ -670,6 +765,89 @@ def make_build_card_pack_node(deps):
 
 # === Debate skeleton and trade plan nodes ===
 
+def make_ai_policy_assessment_node(deps):
+    def ai_policy_assessment_node(state: dict) -> dict:
+        trace = start_node_trace("ai_policy_assessment")
+        try:
+            card_pack = state.get("card_pack")
+            if card_pack is None:
+                from app.services.trade_decision_policy_assessment_agent import TradeDecisionPolicyAssessmentAgent
+
+                agent = TradeDecisionPolicyAssessmentAgent(
+                    deps.llm_service,
+                    monitoring_service=getattr(deps, "monitoring_service", None),
+                    prompt_service=getattr(deps, "prompt_service", None),
+                    run_id=state.get("agent_run_id"),
+                    task_id=_task_id_from_state(state),
+                )
+                fallback = agent._fallback_assessment({"current_position_pct": 0.0}, "card_pack_missing_for_ai_policy_assessment")
+                trace = finish_node_trace(trace, "fallback", fallback_used=True, fallback_reason="card_pack_missing_for_ai_policy_assessment")
+                return {
+                    "ai_policy_assessment": fallback,
+                    "ai_policy_assessment_prompt_metadata": getattr(agent, "_last_prompt_metadata", None),
+                    "data_limitations": list(fallback.get("data_limitations") or []),
+                    "node_traces": [trace],
+                }
+
+            from app.services.trade_decision_policy_assessment_agent import TradeDecisionPolicyAssessmentAgent
+
+            agent = TradeDecisionPolicyAssessmentAgent(
+                deps.llm_service,
+                monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
+                run_id=state.get("agent_run_id"),
+                task_id=_task_id_from_state(state),
+            )
+            assessment, sub_trace = agent.generate(card_pack)
+            if card_pack is not None:
+                card_pack.ai_policy_assessment = assessment
+            trace = _finish_debate_node_trace(trace, sub_trace)
+            result = {
+                "ai_policy_assessment": assessment,
+                "ai_policy_assessment_prompt_metadata": sub_trace.prompt_metadata,
+                "card_pack": card_pack,
+            }
+            if sub_trace.fallback_used:
+                result["data_limitations"] = list(assessment.get("data_limitations") or [])
+            return {**result, "node_traces": [trace]}
+        except Exception as exc:
+            reason = str(exc)[:200]
+            from app.services.trade_decision_policy_assessment_agent import TradeDecisionPolicyAssessmentAgent
+
+            agent = TradeDecisionPolicyAssessmentAgent(
+                getattr(deps, "llm_service", None),
+                monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
+                run_id=state.get("agent_run_id"),
+                task_id=_task_id_from_state(state),
+            )
+            fallback = agent._fallback_assessment({"current_position_pct": 0.0}, reason)
+            card_pack = state.get("card_pack")
+            if card_pack is not None:
+                card_pack.ai_policy_assessment = fallback
+            trace = finish_node_trace(
+                trace,
+                "fallback",
+                rounds_used=1,
+                tools_called=[],
+                tool_call_count=0,
+                fallback_used=True,
+                fallback_reason=reason,
+                structured_output=None,
+                runtime_trace=[],
+                prompt_metadata=getattr(agent, "_last_prompt_metadata", None),
+            )
+            return {
+                "ai_policy_assessment": fallback,
+                "ai_policy_assessment_prompt_metadata": getattr(agent, "_last_prompt_metadata", None),
+                "card_pack": card_pack,
+                "data_limitations": list(fallback.get("data_limitations") or []),
+                "node_traces": [trace],
+            }
+
+    return ai_policy_assessment_node
+
+
 def make_bull_thesis_node(deps):
     def bull_thesis_node(state: dict) -> dict:
         trace = start_node_trace("bull_thesis")
@@ -679,6 +857,7 @@ def make_bull_thesis_node(deps):
             agent = BullThesisAgent(
                 deps.llm_service,
                 monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
                 run_id=state.get("agent_run_id"),
                 task_id=_task_id_from_state(state),
             )
@@ -718,6 +897,7 @@ def make_bear_thesis_node(deps):
             agent = BearThesisAgent(
                 deps.llm_service,
                 monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
                 run_id=state.get("agent_run_id"),
                 task_id=_task_id_from_state(state),
             )
@@ -760,6 +940,7 @@ def make_bull_rebuttal_node(deps):
             agent = BullRebuttalAgent(
                 deps.llm_service,
                 monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
                 run_id=state.get("agent_run_id"),
                 task_id=_task_id_from_state(state),
             )
@@ -802,6 +983,7 @@ def make_bear_rebuttal_node(deps):
             agent = BearRebuttalAgent(
                 deps.llm_service,
                 monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
                 run_id=state.get("agent_run_id"),
                 task_id=_task_id_from_state(state),
             )
@@ -846,6 +1028,7 @@ def make_debate_judge_node(deps):
             agent = DebateJudgeAgent(
                 deps.llm_service,
                 monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
                 run_id=state.get("agent_run_id"),
                 task_id=_task_id_from_state(state),
             )
@@ -928,6 +1111,7 @@ def make_trade_plan_node(deps):
             agent = TradeDecisionTradePlanAgent(
                 llm_service=deps.llm_service,
                 monitoring_service=getattr(deps, "monitoring_service", None),
+                prompt_service=getattr(deps, "prompt_service", None),
                 run_id=state.get("agent_run_id"),
                 task_id=_task_id_from_state(state),
             )
@@ -1022,6 +1206,8 @@ def make_compose_decision_node(deps):
                 card_pack.debate_judge_card = state.get("debate_judge_card")
             if card_pack is not None and state.get("risk_reward_card") is not None:
                 card_pack.risk_reward_card = state.get("risk_reward_card")
+            if card_pack is not None and state.get("ai_policy_assessment") is not None:
+                card_pack.ai_policy_assessment = state.get("ai_policy_assessment")
             if card_pack is not None and card_pack.risk_reward_card is None and card_pack.trade_plan_card is not None:
                 from app.services.trade_decision_risk_reward_compat import build_risk_reward_card_from_trade_plan
 
@@ -1154,6 +1340,7 @@ def make_persist_decision_node(deps):
                     "trade_decision_bull_rebuttal": state.get("bull_rebuttal_prompt_metadata"),
                     "trade_decision_bear_rebuttal": state.get("bear_rebuttal_prompt_metadata"),
                     "trade_decision_debate_judge": state.get("debate_judge_prompt_metadata"),
+                    "trade_decision_ai_policy_assessment": state.get("ai_policy_assessment_prompt_metadata"),
                     "trade_decision_trade_plan": state.get("trade_plan_prompt_metadata"),
                 }.items()
                 if value

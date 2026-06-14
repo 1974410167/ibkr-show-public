@@ -70,6 +70,7 @@ class SymbolAiAdviceRequest(BaseModel):
     left_symbol: str
     right_symbol: str
     question: str | None = None
+    comparison: SymbolComparisonResponse | None = None
 
 
 class SymbolAiAdviceResponse(BaseModel):

@@ -126,6 +126,22 @@ _REGISTRY: list[StructuredOutputContractSpec] = [
         owner="trade_decision",
         description="Event catalyst sub-agent output: sentiment, catalyst_strength, key_events, score 0-5.",
     ),
+    StructuredOutputContractSpec(
+        name="trade_decision_ai_policy_assessment",
+        agent_name="trade_decision",
+        node_name="ai_policy_assessment",
+        output_model_name="AiPolicyAssessmentOutput",
+        module_path="app.agents.trade_decision_structured_outputs",
+        builder_name="build_ai_policy_assessment_contract",
+        schema_hint_available=True,
+        examples_count=2,
+        max_repair_attempts=1,
+        repair_enabled=True,
+        fallback_enabled=False,
+        dynamic_fallback=False,
+        owner="trade_decision",
+        description="AI policy assessment sub-agent output: independent role, target range, max position, challenge and action bias.",
+    ),
     # Daily Position Review
     StructuredOutputContractSpec(
         name="daily_review_symbol_evidence_card",

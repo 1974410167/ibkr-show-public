@@ -114,6 +114,11 @@ class TradeDecisionResult(BaseModel):
     overall_score: float
     rating: str
     action: str
+    draft_action: str | None = None
+    risk_adjusted_action: str | None = None
+    final_action: str | None = None
+    action_change_reason: str | None = None
+    action_downgrade_chain: list[dict] = Field(default_factory=list)
     confidence: str
     decision_summary: str
     score_detail: dict[str, TradeDecisionScoreItem]
@@ -129,6 +134,8 @@ class TradeDecisionResult(BaseModel):
     asset_debate: dict = Field(default_factory=dict)
     trade_plan: dict = Field(default_factory=dict)
     risk_gate: dict = Field(default_factory=dict)
+    user_investment_policy_summary: dict | None = None
+    ai_policy_assessment: dict = Field(default_factory=dict)
     decision_quality: dict = Field(default_factory=dict)
     run_trace: list[AgentRunTraceItem] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
@@ -143,3 +150,80 @@ class TradeDecisionResult(BaseModel):
 
 class TradeDecisionListResponse(BaseModel):
     items: list[TradeDecisionResult]
+
+
+class TradeDecisionOutcomeItem(BaseModel):
+    decision_id: str
+    symbol: str
+    decision_type: str
+    created_at: str
+    decision_date: str | None = None
+    draft_action: str | None = None
+    risk_adjusted_action: str | None = None
+    final_action: str | None = None
+    action_group: str
+    ai_position_stance: str | None = None
+    ai_recommended_action_bias: str | None = None
+    ai_recommended_target_position_pct: float | None = None
+    ai_recommended_max_position_pct: float | None = None
+    user_preferred_target_position_pct: float | None = None
+    decision_price: float | None = None
+    price_after_1d: float | None = None
+    price_after_5d: float | None = None
+    price_after_20d: float | None = None
+    return_1d: float | None = None
+    return_5d: float | None = None
+    return_20d: float | None = None
+    max_drawdown_20d: float | None = None
+    max_runup_20d: float | None = None
+    price_data_status: str = "unknown"
+    outcome_label: str
+    outcome_reason: str
+    data_limitations: list[str] = Field(default_factory=list)
+
+
+class TradeDecisionOutcomeSummary(BaseModel):
+    version: str
+    total_count: int
+    evaluated_count: int
+    pending_count: int
+    missing_price_count: int
+    add_like_count: int
+    hold_like_count: int
+    reduce_like_count: int
+    add_like_avg_return_1d: float | None = None
+    add_like_avg_return_5d: float | None = None
+    add_like_avg_return_20d: float | None = None
+    hold_like_avg_return_1d: float | None = None
+    hold_like_avg_return_5d: float | None = None
+    hold_like_avg_return_20d: float | None = None
+    reduce_like_avg_return_1d: float | None = None
+    reduce_like_avg_return_5d: float | None = None
+    reduce_like_avg_return_20d: float | None = None
+    add_like_win_rate_5d: float
+    add_like_win_rate_20d: float
+    bad_add_count: int
+    missed_upside_count: int
+    avoided_loss_count: int
+    sold_too_early_count: int
+    missed_ai_add_opportunity_count: int
+    calibrated_action_success_count: int
+    risk_gate_avoided_loss_count: int
+    risk_gate_missed_upside_count: int
+    action_value_score: float | None = None
+    outcome_label_distribution: list[dict]
+    action_group_distribution: list[dict]
+    by_symbol: list[dict]
+    by_final_action: list[dict]
+    by_ai_recommended_action_bias: list[dict]
+    by_ai_position_stance: list[dict]
+    top_good_decisions: list[TradeDecisionOutcomeItem]
+    top_bad_decisions: list[TradeDecisionOutcomeItem]
+    top_missed_upside_decisions: list[TradeDecisionOutcomeItem]
+    generated_at: str
+    data_limitations: list[str] = Field(default_factory=list)
+
+
+class TradeDecisionOutcomeListResponse(BaseModel):
+    items: list[TradeDecisionOutcomeItem]
+    summary: TradeDecisionOutcomeSummary

@@ -5,6 +5,7 @@ from app.api.deps import (
     get_longbridge_external_data_client,
     get_trade_decision_account_facts_builder,
     get_trade_decision_agent,
+    get_trade_decision_outcome_replay_service,
     get_trade_decision_repository,
     require_authenticated_session,
 )
@@ -17,6 +18,9 @@ from app.schemas.trade_decision import (
     TradeDecisionHealthResponse,
     TradeDecisionHoldingsResponse,
     TradeDecisionListResponse,
+    TradeDecisionOutcomeItem,
+    TradeDecisionOutcomeListResponse,
+    TradeDecisionOutcomeSummary,
     TradeDecisionResult,
 )
 from app.agents.trade_decision_graph.graph import TRADE_DECISION_GRAPH_EDGES, TRADE_DECISION_GRAPH_NODES
@@ -27,13 +31,14 @@ from app.services.agent_task_repository import AgentTaskRepository
 from app.services.agent_task_progress import AgentTaskProgressReporter
 from app.services.trade_decision_agent import TradeDecisionAgent, TradeDecisionAgentError
 from app.services.trade_decision_quality_analytics import TradeDecisionQualityAnalyticsService
+from app.services.trade_decision_outcome_replay import TradeDecisionOutcomeReplayService
 from app.services.trade_decision_repository import TradeDecisionRepository
 
 router = APIRouter(prefix="/agent/trade-decision", tags=["trade-decision-agent"])
 AGENT_NAME = "trade_decision"
 
 
-def _public_decision(document: dict) -> TradeDecisionResult:
+def _public_decision(document: dict, *, include_details: bool = True) -> TradeDecisionResult:
     return TradeDecisionResult(
         id=document["id"],
         decision_type=document["decision_type"],
@@ -42,6 +47,11 @@ def _public_decision(document: dict) -> TradeDecisionResult:
         overall_score=document["overall_score"],
         rating=document["rating"],
         action=document["action"],
+        draft_action=document.get("draft_action"),
+        risk_adjusted_action=document.get("risk_adjusted_action"),
+        final_action=document.get("final_action"),
+        action_change_reason=document.get("action_change_reason"),
+        action_downgrade_chain=document.get("action_downgrade_chain") or [],
         confidence=document["confidence"],
         decision_summary=document["decision_summary"],
         score_detail=document["score_detail"],
@@ -53,14 +63,16 @@ def _public_decision(document: dict) -> TradeDecisionResult:
         data_limitations=document.get("data_limitations") or [],
         evidence_used=document.get("evidence_used") or [],
         data_source_summary=document.get("data_source_summary") or {},
-        card_pack=document.get("card_pack") or {},
-        asset_debate=document.get("asset_debate") or {},
-        trade_plan=document.get("trade_plan") or {},
-        risk_gate=document.get("risk_gate") or {},
+        card_pack=document.get("card_pack") or {} if include_details else {},
+        asset_debate=document.get("asset_debate") or {} if include_details else {},
+        trade_plan=document.get("trade_plan") or {} if include_details else {},
+        risk_gate=document.get("risk_gate") or {} if include_details else {},
+        user_investment_policy_summary=document.get("user_investment_policy_summary"),
+        ai_policy_assessment=document.get("ai_policy_assessment") or {},
         decision_quality=document.get("decision_quality") or {},
-        run_trace=document.get("run_trace") or document.get("evidence_pack", {}).get("tool_trace") or [],
+        run_trace=(document.get("run_trace") or document.get("evidence_pack", {}).get("tool_trace") or []) if include_details else [],
         metadata=document.get("metadata") or {},
-        evidence_summary=document.get("evidence_summary") or {},
+        evidence_summary=document.get("evidence_summary") or {} if include_details else {},
         run_trace_summary=document.get("run_trace_summary") or {},
         fallback_used=document.get("fallback_used", False),
         fallback_reason=document.get("fallback_reason"),
@@ -70,8 +82,11 @@ def _public_decision(document: dict) -> TradeDecisionResult:
     )
 
 
-def _public_task(document: dict) -> AgentTaskResponse:
-    return AgentTaskResponse(**document)
+def _public_task(document: dict, *, include_events: bool = True) -> AgentTaskResponse:
+    payload = dict(document)
+    if not include_events:
+        payload["graph_events"] = []
+    return AgentTaskResponse(**payload)
 
 
 def _run_decision_task(task_id: str, task_repository: AgentTaskRepository, agent: TradeDecisionAgent) -> None:
@@ -253,7 +268,7 @@ def list_trade_decision_tasks(
     _auth_session: AuthSession = Depends(require_authenticated_session),
     task_repository: AgentTaskRepository = Depends(get_agent_task_repository),
 ) -> AgentTaskListResponse:
-    return AgentTaskListResponse(items=[_public_task(item) for item in task_repository.list_tasks(agent=AGENT_NAME, limit=limit)])
+    return AgentTaskListResponse(items=[_public_task(item, include_events=False) for item in task_repository.list_tasks(agent=AGENT_NAME, limit=limit)])
 
 
 @router.get("/tasks/{task_id}", response_model=AgentTaskResponse)
@@ -275,7 +290,7 @@ def list_recent_decisions(
     _auth_session: AuthSession = Depends(require_authenticated_session),
     repository: TradeDecisionRepository = Depends(get_trade_decision_repository),
 ) -> TradeDecisionListResponse:
-    return TradeDecisionListResponse(items=[_public_decision(item) for item in repository.list_recent_decisions(limit, decision_type)])
+    return TradeDecisionListResponse(items=[_public_decision(item, include_details=False) for item in repository.list_recent_decisions(limit, decision_type)])
 
 
 @router.get("/quality/summary")
@@ -289,6 +304,83 @@ def get_trade_decision_quality_summary(
     return TradeDecisionQualityAnalyticsService().summarize(documents)
 
 
+def _parse_horizons(value: str | None) -> list[int] | None:
+    if not value:
+        return None
+    horizons: list[int] = []
+    for item in value.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            horizon = int(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="horizons must be comma-separated integers") from exc
+        if horizon <= 0 or horizon > 120:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="horizons must be between 1 and 120")
+        horizons.append(horizon)
+    return horizons or None
+
+
+@router.get("/outcome/summary", response_model=TradeDecisionOutcomeSummary)
+def get_trade_decision_outcome_summary(
+    days: int = Query(default=90, ge=1, le=3650),
+    limit: int = Query(default=500, ge=1, le=2000),
+    symbol: str | None = Query(default=None),
+    decision_type: str | None = Query(default=None),
+    horizons: str | None = Query(default=None),
+    action_group: str | None = Query(default=None),
+    outcome_label: str | None = Query(default=None),
+    _auth_session: AuthSession = Depends(require_authenticated_session),
+    service: TradeDecisionOutcomeReplayService = Depends(get_trade_decision_outcome_replay_service),
+) -> TradeDecisionOutcomeSummary:
+    return service.build_outcomes(
+        days=days,
+        limit=limit,
+        symbol=symbol,
+        decision_type=decision_type,
+        horizons=_parse_horizons(horizons),
+        action_group=action_group,
+        outcome_label=outcome_label,
+    ).summary
+
+
+@router.get("/outcome/list", response_model=TradeDecisionOutcomeListResponse)
+def list_trade_decision_outcomes(
+    days: int = Query(default=90, ge=1, le=3650),
+    limit: int = Query(default=500, ge=1, le=2000),
+    symbol: str | None = Query(default=None),
+    decision_type: str | None = Query(default=None),
+    horizons: str | None = Query(default=None),
+    action_group: str | None = Query(default=None),
+    outcome_label: str | None = Query(default=None),
+    _auth_session: AuthSession = Depends(require_authenticated_session),
+    service: TradeDecisionOutcomeReplayService = Depends(get_trade_decision_outcome_replay_service),
+) -> TradeDecisionOutcomeListResponse:
+    return service.build_outcomes(
+        days=days,
+        limit=limit,
+        symbol=symbol,
+        decision_type=decision_type,
+        horizons=_parse_horizons(horizons),
+        action_group=action_group,
+        outcome_label=outcome_label,
+    )
+
+
+@router.get("/outcome/{decision_id}", response_model=TradeDecisionOutcomeItem)
+def get_trade_decision_outcome(
+    decision_id: str,
+    horizons: str | None = Query(default=None),
+    _auth_session: AuthSession = Depends(require_authenticated_session),
+    service: TradeDecisionOutcomeReplayService = Depends(get_trade_decision_outcome_replay_service),
+) -> TradeDecisionOutcomeItem:
+    outcome = service.get_outcome(decision_id, horizons=_parse_horizons(horizons))
+    if outcome is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade decision not found")
+    return outcome
+
+
 @router.get("/symbol/{symbol}", response_model=TradeDecisionListResponse)
 def list_symbol_decisions(
     symbol: str,
@@ -297,7 +389,7 @@ def list_symbol_decisions(
     repository: TradeDecisionRepository = Depends(get_trade_decision_repository),
 ) -> TradeDecisionListResponse:
     normalized = normalize_longbridge_symbol(symbol)
-    return TradeDecisionListResponse(items=[_public_decision(item) for item in repository.list_symbol_decisions(normalized, limit)])
+    return TradeDecisionListResponse(items=[_public_decision(item, include_details=False) for item in repository.list_symbol_decisions(normalized, limit)])
 
 
 @router.get("/{decision_id}", response_model=TradeDecisionResult)

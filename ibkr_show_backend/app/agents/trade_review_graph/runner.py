@@ -35,6 +35,7 @@ class TradeReviewGraphRunner:
         trace_service: Any | None = None,
         replay_service: Any | None = None,
         monitoring_service: Any | None = None,
+        investment_policy_service: Any | None = None,
     ) -> None:
         self.trace_service = trace_service
         self.replay_service = replay_service
@@ -45,6 +46,7 @@ class TradeReviewGraphRunner:
             mcp_adapter=mcp_adapter,
             prompt_service=prompt_service,
             monitoring_service=monitoring_service,
+            investment_policy_service=investment_policy_service,
         )
         self.graph = build_trade_review_graph(self.deps)
 

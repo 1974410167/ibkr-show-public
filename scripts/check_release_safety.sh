@@ -58,8 +58,8 @@ check 'FLEX_QUERY_ID_DAILY=[0-9]' "IBKR Query ID (hardcoded)"
 check 'sk-[a-zA-Z0-9]\{20,\}' "OpenAI-style API Key"
 check 'LONGBRIDGE_OPENAPI_OAUTH_CLIENT_ID=[^ ]' "LongBridge Client ID (hardcoded)"
 check 'REMOTE_SSH_PASSWORD=' "SSH password"
-check 'gehaoyuan\.top' "Private domain"
-check '/root/ibkr_show' "Private server path"
+check 'https\{0,1\}://[a-zA-Z0-9.-]\{1,\}\.top' "Private .top domain"
+check '/root/[A-Za-z0-9_-]\{1,\}' "Private server path"
 
 check_file_pattern '*/data/config/*.json' "tracked config JSON"
 

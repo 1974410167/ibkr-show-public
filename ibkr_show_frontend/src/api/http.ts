@@ -39,6 +39,15 @@ function formatDetail(detail: unknown): string {
     return detail
   }
 
+  if (detail && typeof detail === 'object') {
+    if ('message' in detail) {
+      return String((detail as { message: unknown }).message)
+    }
+    if ('error_code' in detail) {
+      return String((detail as { error_code: unknown }).error_code)
+    }
+  }
+
   return '请求失败'
 }
 
@@ -60,9 +69,6 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const payload = isJson ? await response.json() : await response.text()
 
   if (!response.ok) {
-    if (response.status === 502 || response.status === 503 || response.status === 504) {
-      throw new ApiError('请求超时，后端可能仍在继续执行，请稍后刷新或等待运行状态更新。', response.status)
-    }
     const isHtml = typeof payload === 'string' && payload.trimStart().startsWith('<')
     if (isHtml) {
       throw new ApiError('服务网关返回异常，请稍后重试或刷新查看结果。', response.status)
@@ -73,6 +79,9 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
         : typeof payload === 'string'
           ? payload
           : `Request failed with status ${response.status}`
+    if ((response.status === 502 || response.status === 503 || response.status === 504) && detail === `Request failed with status ${response.status}`) {
+      throw new ApiError('请求超时，后端可能仍在继续执行，请稍后刷新或等待运行状态更新。', response.status)
+    }
     throw new ApiError(detail, response.status)
   }
 

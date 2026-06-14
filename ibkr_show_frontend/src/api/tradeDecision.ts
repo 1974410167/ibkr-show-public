@@ -3,6 +3,8 @@ import type {
   TradeDecisionHealth,
   TradeDecisionHoldingsResponse,
   TradeDecisionListResponse,
+  TradeDecisionOutcomeListResponse,
+  TradeDecisionOutcomeSummary,
   TradeDecisionQualitySummary,
   TradeDecisionResult,
 } from '@/types/tradeDecision'
@@ -104,6 +106,34 @@ export function fetchTradeDecisionQualitySummary(params: {
 } = {}): Promise<TradeDecisionQualitySummary> {
   return request<TradeDecisionQualitySummary>(
     `/api/agent/trade-decision/quality/summary${toQueryString(params)}`,
+  )
+}
+
+export function fetchTradeDecisionOutcomeSummary(params: {
+  limit?: number
+  days?: number
+  symbol?: string
+  decision_type?: string
+  horizons?: string
+  action_group?: string
+  outcome_label?: string
+} = {}): Promise<TradeDecisionOutcomeSummary> {
+  return request<TradeDecisionOutcomeSummary>(
+    `/api/agent/trade-decision/outcome/summary${toQueryString(params)}`,
+  )
+}
+
+export function fetchTradeDecisionOutcomeList(params: {
+  limit?: number
+  days?: number
+  symbol?: string
+  decision_type?: string
+  horizons?: string
+  action_group?: string
+  outcome_label?: string
+} = {}): Promise<TradeDecisionOutcomeListResponse> {
+  return request<TradeDecisionOutcomeListResponse>(
+    `/api/agent/trade-decision/outcome/list${toQueryString(params)}`,
   )
 }
 

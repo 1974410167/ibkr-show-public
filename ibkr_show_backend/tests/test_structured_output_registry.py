@@ -84,7 +84,7 @@ class TestRegistryLookup:
         assert "trade_decision" in grouped
         assert "daily_position_review" in grouped
         assert "trade_review" in grouped
-        assert len(grouped["trade_decision"]) == 3
+        assert len(grouped["trade_decision"]) == 4
 
 
 class TestAuditScript:
@@ -126,4 +126,4 @@ class TestAuditScript:
         assert result.returncode == 0
         import json
         data = json.loads(result.stdout)
-        assert data["total"] == 3
+        assert data["total"] == 4

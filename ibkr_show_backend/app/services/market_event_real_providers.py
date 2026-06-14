@@ -73,7 +73,7 @@ BEA_RELEASE_MAP: dict[str, tuple[MarketEventType, MarketEventImportance]] = {
 
 HTTP_TIMEOUT = 15.0
 HTTP_HEADERS = {
-    "User-Agent": "ibkr-show/1.0 (+https://gehaoyuan.top; market-event-calendar)",
+    "User-Agent": "ibkr-trade-agent/1.0 (+https://github.com/1974410167/ibkr-trade-agent; market-event-calendar)",
     "Accept": "application/json,text/calendar,text/html;q=0.9,*/*;q=0.8",
 }
 

@@ -28,6 +28,8 @@ class TradeDecisionGraphState(BaseGraphState, total=False):
     user_question: str | None
 
     account_fact_snapshot: AccountFactSnapshot | dict | None
+    user_investment_policy: dict | None
+    ai_policy_assessment: dict | None
 
     account_fit_card: AccountFitCard | None
     market_trend_card: MarketTrendCard | None
@@ -61,3 +63,4 @@ class TradeDecisionGraphState(BaseGraphState, total=False):
     bear_rebuttal_prompt_metadata: dict | None
     debate_judge_prompt_metadata: dict | None
     trade_plan_prompt_metadata: dict | None
+    ai_policy_assessment_prompt_metadata: dict | None

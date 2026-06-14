@@ -36,6 +36,7 @@ class TradeDecisionGraphRunner:
         llm_service: Any,
         repository: Any,
         mcp_adapter: Any = None,
+        investment_policy_service: Any = None,
         prompt_service: Any = None,
         trace_service: Any = None,
         replay_service: Any = None,
@@ -45,11 +46,22 @@ class TradeDecisionGraphRunner:
         self.trace_service = trace_service
         self.replay_service = replay_service
         self.monitoring_service = monitoring_service
+        if investment_policy_service is None:
+            try:
+                from app.services.investment_policy_repository import InvestmentPolicyRepository
+                from app.services.investment_policy_service import InvestmentPolicyService
+
+                investment_policy_service = InvestmentPolicyService(
+                    InvestmentPolicyRepository(repository.es_client, repository.settings)
+                )
+            except Exception:
+                investment_policy_service = None
         self.deps = TradeDecisionGraphDeps(
             account_facts_builder=account_facts_builder,
             llm_service=llm_service,
             repository=repository,
             mcp_adapter=mcp_adapter,
+            investment_policy_service=investment_policy_service,
             prompt_service=prompt_service,
             monitoring_service=monitoring_service,
             market_event_query_service=market_event_query_service,
@@ -167,6 +179,11 @@ class TradeDecisionGraphRunner:
             "overall_score": 0,
             "rating": "negative",
             "action": "watchlist",
+            "draft_action": "watchlist",
+            "risk_adjusted_action": "watchlist",
+            "final_action": "watchlist",
+            "action_change_reason": None,
+            "action_downgrade_chain": [],
             "confidence": "low",
             "decision_summary": f"分析失败，建议观望：{reason[:100]}",
             "score_detail": {},

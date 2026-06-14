@@ -17,12 +17,14 @@ def _trace(node_name: str, *, status: str = "success", tools_called=None, fallba
 def _base_document() -> dict:
     run_trace = [
         _trace("build_account_facts"),
+        _trace("load_user_investment_policy"),
         _trace("account_fit"),
         _trace("market_trend"),
         _trace("fundamental_valuation"),
         _trace("event_catalyst"),
         _trace("market_event_context"),
         _trace("build_card_pack"),
+        _trace("ai_policy_assessment"),
         _trace("bull_thesis"),
         _trace("bear_thesis"),
         _trace("bull_rebuttal"),
@@ -53,6 +55,19 @@ def _base_document() -> dict:
             "summary": "derived",
             "data_limitations": ["risk_reward_derived_from_trade_plan"],
         },
+        "ai_policy_assessment": {
+            "status": "evaluated",
+            "ai_assessed_asset_role": "core_growth",
+            "ai_role_confidence": "medium",
+            "ai_recommended_min_position_pct": 0.0,
+            "ai_recommended_target_position_pct": 0.05,
+            "ai_recommended_max_position_pct": 0.08,
+            "ai_recommended_target_position_range_pct": [0.03, 0.06],
+            "ai_position_stance": "underweight",
+            "challenge_level": "agree",
+            "recommended_action_bias": "prefer_pullback_add",
+            "prompt_key": "trade_decision_ai_policy_assessment",
+        },
     }
     return {
         "id": "decision-1",
@@ -61,6 +76,10 @@ def _base_document() -> dict:
         "overall_score": 70,
         "rating": "positive",
         "action": "hold_no_add",
+        "draft_action": "add_on_pullback",
+        "risk_adjusted_action": "hold_no_add",
+        "final_action": "hold_no_add",
+        "action_downgrade_chain": [{"from": "add_on_pullback", "to": "hold_no_add", "by": "risk_gate", "reason": "仓位上限约束"}],
         "confidence": "medium",
         "decision_summary": "summary",
         "score_detail": {},
@@ -104,6 +123,24 @@ def _base_document() -> dict:
             "gate_reasons": ["仓位上限约束"],
             "risk_flags": ["position_limit_reached"],
             "action_constraints": {"max_position_pct": 0.08},
+        },
+        "user_investment_policy_summary": {
+            "asset_role": "core_growth",
+            "user_preferred_target_position_pct": 0.08,
+            "user_preferred_max_position_pct": 0.12,
+        },
+        "ai_policy_assessment": {
+            "status": "evaluated",
+            "ai_assessed_asset_role": "core_growth",
+            "ai_role_confidence": "medium",
+            "ai_recommended_min_position_pct": 0.0,
+            "ai_recommended_target_position_pct": 0.05,
+            "ai_recommended_max_position_pct": 0.08,
+            "ai_recommended_target_position_range_pct": [0.03, 0.06],
+            "ai_position_stance": "underweight",
+            "challenge_level": "agree",
+            "recommended_action_bias": "prefer_pullback_add",
+            "prompt_key": "trade_decision_ai_policy_assessment",
         },
         "created_at": "2026-05-20T00:00:00+00:00",
         "updated_at": "2026-05-20T00:00:00+00:00",
@@ -175,6 +212,75 @@ def test_target_exceeds_max_position_is_flagged():
 
     assert "target_exceeds_max_position" in result["flags"]
     assert result["checks"]["position_consistency"]["passed"] is False
+
+
+def test_ai_policy_position_order_invalid_is_hard_failure():
+    doc = _base_document()
+    doc["ai_policy_assessment"]["ai_recommended_min_position_pct"] = 0.1
+    doc["ai_policy_assessment"]["ai_recommended_target_position_pct"] = 0.05
+
+    result = TradeDecisionQualityEvaluator().evaluate(doc)
+
+    assert "ai_policy_position_order_invalid" in result["hard_failures"]
+    assert result["checks"]["ai_policy_assessment_integrity"]["passed"] is False
+
+
+def test_add_like_target_above_ai_max_is_hard_failure():
+    doc = _base_document()
+    doc["action"] = "add_on_pullback"
+    doc["risk_gate"]["final_action"] = "add_on_pullback"
+    doc["position_advice"]["suggested_target_position_pct"] = 0.12
+    doc["ai_policy_assessment"]["ai_recommended_max_position_pct"] = 0.08
+
+    result = TradeDecisionQualityEvaluator().evaluate(doc)
+
+    assert "add_like_target_above_ai_policy_max" in result["hard_failures"]
+    assert "add_like_over_ai_max" in result["flags"]
+
+
+def test_underweight_allow_add_final_hold_like_gets_over_conservative_warning():
+    doc = _base_document()
+    doc["ai_policy_assessment"]["ai_position_stance"] = "underweight"
+    doc["ai_policy_assessment"]["recommended_action_bias"] = "allow_add"
+    doc["risk_gate"]["risk_flags"] = []
+    doc["risk_gate"]["gate_reasons"] = []
+    doc["action_downgrade_chain"] = []
+
+    result = TradeDecisionQualityEvaluator().evaluate(doc)
+
+    assert "ai_underweight_allow_add_but_final_hold_like" in result["warnings"]
+    assert "over_conservative_hold_like" in result["flags"]
+
+
+def test_hold_like_without_blocking_reason_gets_warning():
+    doc = _base_document()
+    doc["action"] = "wait"
+    doc["final_action"] = "wait"
+    doc["risk_adjusted_action"] = "wait"
+    doc["draft_action"] = "wait"
+    doc["risk_gate"]["final_action"] = "wait"
+    doc["risk_gate"]["gate_reasons"] = []
+    doc["risk_gate"]["risk_flags"] = []
+    doc["trade_plan"]["risk_reward_assessment"] = {"sanitization_notes": []}
+    doc["action_downgrade_chain"] = []
+
+    result = TradeDecisionQualityEvaluator().evaluate(doc)
+
+    assert "hold_like_without_clear_blocking_reason" in result["warnings"]
+
+
+def test_hard_risk_add_like_is_hard_failure():
+    doc = _base_document()
+    doc["action"] = "add_small"
+    doc["final_action"] = "add_small"
+    doc["risk_adjusted_action"] = "add_small"
+    doc["risk_gate"]["final_action"] = "add_small"
+    doc["card_pack"]["fundamental_valuation_card"]["fundamental_status"] = "red"
+
+    result = TradeDecisionQualityEvaluator().evaluate(doc)
+
+    assert "add_like_with_fundamental_red" in result["hard_failures"]
+    assert "hard_risk_add_like" in result["flags"]
 
 
 def test_missing_risk_gate_is_hard_failure():

@@ -6,7 +6,7 @@ tool list via _build_mcp_tools(), converts to OpenAI tools format, and reports
 token estimates. Does NOT call any LLM or real MCP tool.
 
 Usage:
-    cd /root/ibkr_show
+    cd /path/to/ibkr-trade-agent
     cd ibkr_show_backend && ../.venv/bin/python ../scripts/measure_trade_decision_tool_tokens.py
 """
 

@@ -24,6 +24,7 @@ export function generateSymbolAiAdvice(payload: {
   left_symbol: string
   right_symbol: string
   question?: string
+  comparison?: SymbolComparisonResponse
 }): Promise<SymbolAiAdviceResponse> {
   return request<SymbolAiAdviceResponse>('/api/symbol-analysis/compare/ai-advice', {
     method: 'POST',

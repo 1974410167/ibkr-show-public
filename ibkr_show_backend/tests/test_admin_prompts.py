@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from fastapi.testclient import TestClient
 
 from app.agents.prompt_registry import get_prompt_definition, list_prompt_definitions
-from app.api.deps import get_admin_prompt_service
+from app.api.deps import get_admin_prompt_service, require_admin_session
+from app.core.auth import AuthSession
 from app.core.config import get_settings
 from app.main import app
 from app.services.admin_prompt_repository import content_sha256
@@ -22,6 +23,13 @@ EXPECTED_PROMPT_KEYS = {
     "trade_decision_market_trend",
     "trade_decision_fundamental_valuation",
     "trade_decision_event_catalyst",
+    "trade_decision_bull_thesis",
+    "trade_decision_bear_thesis",
+    "trade_decision_bull_rebuttal",
+    "trade_decision_bear_rebuttal",
+    "trade_decision_debate_judge",
+    "trade_decision_ai_policy_assessment",
+    "trade_decision_trade_plan",
 }
 
 
@@ -94,7 +102,7 @@ def test_prompt_registry_contains_expected_keys() -> None:
     definitions = list_prompt_definitions()
 
     assert {definition.prompt_key for definition in definitions} == EXPECTED_PROMPT_KEYS
-    assert len(definitions) == 10
+    assert len(definitions) == 17
     for definition in definitions:
         assert definition.default_content.strip()
         assert get_prompt_definition(definition.prompt_key) is definition
@@ -124,6 +132,18 @@ def test_prompt_defaults_are_chinese_and_optimized() -> None:
     for field in ("opportunity_cost_summary", "missed_upside", "capital_redeployment", "alternative_actions", "data_limitations"):
         assert field in opportunity_prompt
 
+    for key in (
+        "trade_decision_bull_thesis",
+        "trade_decision_bear_thesis",
+        "trade_decision_bull_rebuttal",
+        "trade_decision_bear_rebuttal",
+        "trade_decision_debate_judge",
+        "trade_decision_trade_plan",
+    ):
+        prompt = definitions[key].default_content
+        assert "输出示例" in prompt
+        assert "data_limitations" in prompt
+
 
 def test_seed_defaults_creates_active_default_versions() -> None:
     service = _service()
@@ -131,7 +151,7 @@ def test_seed_defaults_creates_active_default_versions() -> None:
     seeded = service.seed_default_versions()
     items = service.list_prompts()
 
-    assert len(seeded) == 10
+    assert len(seeded) == 17
     assert {item["prompt_key"] for item in seeded} == EXPECTED_PROMPT_KEYS
     assert all(item["version"] == "v1" for item in seeded)
     assert all(item["status"] == "active" for item in seeded)
@@ -263,9 +283,9 @@ def test_admin_prompt_routes_return_404_and_422() -> None:
     client = TestClient(app)
     service = _service()
     app.dependency_overrides[get_admin_prompt_service] = lambda: service
+    app.dependency_overrides[require_admin_session] = lambda: AuthSession(username="tester", expires_at=4_102_444_800)
 
     try:
-        _login(client)
         missing_response = client.get("/api/admin/prompts/missing_prompt")
         empty_response = client.post(
             "/api/admin/prompts/trade_review_main/versions",

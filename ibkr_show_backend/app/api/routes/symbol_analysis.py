@@ -63,6 +63,7 @@ def generate_symbol_ai_advice(
             left_symbol=payload.left_symbol,
             right_symbol=payload.right_symbol,
             question=payload.question,
+            comparison=payload.comparison,
         )
     except LLMClientError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error_code": exc.error_code, "message": exc.message}) from exc

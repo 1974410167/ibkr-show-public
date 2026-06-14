@@ -162,6 +162,50 @@ class TradeDecisionRepository:
             return []
         return [hit["_source"] for hit in response.get("hits", {}).get("hits", [])]
 
+    def list_recent_decisions_for_outcome(
+        self,
+        *,
+        limit: int = 500,
+        days: int | None = 90,
+        symbol: str | None = None,
+        decision_type: str | None = None,
+    ) -> list[dict]:
+        filters = []
+        if days is not None:
+            since = datetime.now(timezone.utc) - timedelta(days=days)
+            filters.append({"range": {"created_at": {"gte": since.isoformat()}}})
+        if symbol:
+            filters.append({"term": {"symbol": symbol}})
+        if decision_type:
+            filters.append({"term": {"decision_type": decision_type}})
+        try:
+            response = self.es_client.search(
+                index=self.settings.es_trade_decision_index,
+                body={
+                    "query": {"bool": {"filter": filters or [{"match_all": {}}]}},
+                    "sort": [{"created_at": {"order": "desc"}}],
+                    "size": limit,
+                    "_source": [
+                        "id",
+                        "symbol",
+                        "decision_type",
+                        "created_at",
+                        "action",
+                        "draft_action",
+                        "risk_adjusted_action",
+                        "final_action",
+                        "trade_plan",
+                        "risk_gate",
+                        "position_advice",
+                        "user_investment_policy_summary",
+                        "ai_policy_assessment",
+                    ],
+                },
+            )
+        except ESIndexNotFoundError:
+            return []
+        return [hit["_source"] for hit in response.get("hits", {}).get("hits", [])]
+
     def list_symbol_decisions(self, symbol: str, limit: int) -> list[dict]:
         try:
             response = self.es_client.search(

@@ -100,12 +100,139 @@ export interface TradeDecisionQualitySummary {
   risk_gate: Record<string, unknown>
   structured_output: Record<string, unknown>
   action_consistency: Record<string, unknown>
+  ai_policy_assessment: Record<string, unknown>
+  action_calibration: Record<string, unknown>
   top_hard_failures: TradeDecisionQualityTopItem[]
   top_warnings: TradeDecisionQualityTopItem[]
   top_flags: TradeDecisionQualityTopItem[]
   recent_trend: TradeDecisionQualityTrendItem[]
   generated_at: string
   data_limitations: string[]
+}
+
+export interface TradeDecisionOutcomeItem {
+  decision_id: string
+  symbol: string
+  decision_type: string
+  created_at: string
+  decision_date: string | null
+  draft_action: string | null
+  risk_adjusted_action: string | null
+  final_action: string | null
+  action_group: string
+  ai_position_stance: string | null
+  ai_recommended_action_bias: string | null
+  ai_recommended_target_position_pct: number | null
+  ai_recommended_max_position_pct: number | null
+  user_preferred_target_position_pct: number | null
+  decision_price: number | null
+  price_after_1d: number | null
+  price_after_5d: number | null
+  price_after_20d: number | null
+  return_1d: number | null
+  return_5d: number | null
+  return_20d: number | null
+  max_drawdown_20d: number | null
+  max_runup_20d: number | null
+  price_data_status: string
+  outcome_label: string
+  outcome_reason: string
+  data_limitations: string[]
+}
+
+export interface TradeDecisionOutcomeSummary {
+  version: string
+  total_count: number
+  evaluated_count: number
+  pending_count: number
+  missing_price_count: number
+  add_like_count: number
+  hold_like_count: number
+  reduce_like_count: number
+  add_like_avg_return_1d: number | null
+  add_like_avg_return_5d: number | null
+  add_like_avg_return_20d: number | null
+  hold_like_avg_return_1d: number | null
+  hold_like_avg_return_5d: number | null
+  hold_like_avg_return_20d: number | null
+  reduce_like_avg_return_1d: number | null
+  reduce_like_avg_return_5d: number | null
+  reduce_like_avg_return_20d: number | null
+  add_like_win_rate_5d: number
+  add_like_win_rate_20d: number
+  bad_add_count: number
+  missed_upside_count: number
+  avoided_loss_count: number
+  sold_too_early_count: number
+  missed_ai_add_opportunity_count: number
+  calibrated_action_success_count: number
+  risk_gate_avoided_loss_count: number
+  risk_gate_missed_upside_count: number
+  action_value_score: number | null
+  outcome_label_distribution: TradeDecisionQualityTopItem[]
+  action_group_distribution: TradeDecisionQualityTopItem[]
+  by_symbol: TradeDecisionQualityTopItem[]
+  by_final_action: TradeDecisionQualityTopItem[]
+  by_ai_recommended_action_bias: TradeDecisionQualityTopItem[]
+  by_ai_position_stance: TradeDecisionQualityTopItem[]
+  top_good_decisions: TradeDecisionOutcomeItem[]
+  top_bad_decisions: TradeDecisionOutcomeItem[]
+  top_missed_upside_decisions: TradeDecisionOutcomeItem[]
+  generated_at: string
+  data_limitations: string[]
+}
+
+export interface TradeDecisionOutcomeListResponse {
+  items: TradeDecisionOutcomeItem[]
+  summary: TradeDecisionOutcomeSummary
+}
+
+export interface UserInvestmentPolicySummary {
+  source: 'user_config' | 'default_template' | 'fallback' | string
+  asset_role: string
+  conviction: string
+  user_preferred_min_position_pct: number | null
+  user_preferred_target_position_pct: number | null
+  user_preferred_max_position_pct: number | null
+  current_position_pct: number | null
+  gap_to_user_preferred_target_pct: number | null
+  gap_to_user_preferred_max_pct: number | null
+  user_preference_gap_label?: string
+  enabled: boolean
+  add_rules: string[]
+  no_add_triggers: string[]
+  sell_triggers: string[]
+  hard_constraints: string[]
+  soft_preferences: string[]
+  notes: string
+  ai_review_status: string
+  ai_review_summary: string | null
+  disclaimer: string
+}
+
+export interface AiPolicyAssessment {
+  status?: 'evaluated' | 'fallback' | 'not_evaluated' | string
+  ai_assessed_asset_role?: string | null
+  ai_role_confidence?: string | null
+  ai_recommended_min_position_pct?: number | null
+  ai_recommended_target_position_pct?: number | null
+  ai_recommended_max_position_pct?: number | null
+  ai_recommended_target_position_range_pct?: number[] | null
+  ai_position_stance?: string | null
+  current_position_pct?: number | null
+  gap_to_ai_target_pct?: number | null
+  gap_to_ai_max_pct?: number | null
+  challenge_level?: string | null
+  challenge_reason?: string | null
+  preference_alignment_summary?: string | null
+  recommended_action_bias?: string | null
+  risk_budget?: Record<string, unknown>
+  key_reasons?: string[]
+  key_risks?: string[]
+  data_limitations?: string[]
+  prompt_key?: string
+  prompt_source?: string
+  prompt_version?: string | null
 }
 
 export interface TradeDecisionResult {
@@ -116,6 +243,11 @@ export interface TradeDecisionResult {
   overall_score: number
   rating: string
   action: string
+  draft_action?: string | null
+  risk_adjusted_action?: string | null
+  final_action?: string | null
+  action_change_reason?: string | null
+  action_downgrade_chain?: Array<Record<string, unknown>>
   confidence: string
   decision_summary: string
   score_detail: Record<string, TradeDecisionScoreItem>
@@ -131,6 +263,8 @@ export interface TradeDecisionResult {
   asset_debate?: Record<string, unknown>
   trade_plan?: Record<string, unknown>
   risk_gate?: Record<string, unknown>
+  user_investment_policy_summary?: UserInvestmentPolicySummary | null
+  ai_policy_assessment?: AiPolicyAssessment
   decision_quality?: TradeDecisionQuality
   run_trace: AgentRunTraceItem[]
   metadata: Record<string, unknown>

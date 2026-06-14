@@ -6,6 +6,9 @@ def _period(year: int, quarter: int, fields: list[dict]) -> dict:
 
 
 class StubLongbridgeFinancialClient:
+    def __init__(self) -> None:
+        self.financial_report_calls: list[str] = []
+
     def _symbol_to_counter_id(self, symbol: str) -> str:
         code, market = symbol.rsplit(".", 1)
         return f"ST/{market}/{code}"
@@ -39,6 +42,7 @@ class StubLongbridgeFinancialClient:
         }
 
     def get_financial_report(self, symbol: str, kind: str = "ALL", report: str = "qf") -> dict:
+        self.financial_report_calls.append(symbol)
         value = {"fp_end": "1774670400", "period": "Q1 2026", "year": 2026}
         accounts = [
             {"field": "Revenue", "name": "营业收入", "values": [{**value, "value": "1000"}]},
@@ -219,3 +223,16 @@ def test_symbol_ai_advice_prompt_covers_add_or_entry_decision() -> None:
 
     assert advice.add_conditions == ["等待回调"]
     assert "更适合加仓/建仓" in llm_service.prompts[0]
+
+
+def test_symbol_ai_advice_reuses_existing_comparison() -> None:
+    client = StubLongbridgeFinancialClient()
+    service = SymbolAnalysisService(client, StubLLMService())
+
+    comparison = service.compare("AAPL", "MSFT")
+    calls_after_compare = list(client.financial_report_calls)
+    advice = service.generate_ai_advice("AAPL", "MSFT", comparison=comparison)
+
+    assert advice.recommendation == "left"
+    assert sorted(calls_after_compare) == ["AAPL.US", "MSFT.US"]
+    assert client.financial_report_calls == calls_after_compare

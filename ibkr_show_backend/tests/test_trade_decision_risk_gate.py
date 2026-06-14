@@ -240,6 +240,36 @@ def test_normalize_action_handles_new_actions():
     assert normalize_action("恐慌拦截") == "panic_blocked"
 
 
+def test_risk_gate_downgrades_add_above_ai_policy_max():
+    snapshot = _make_snapshot(is_holding=True, position_pct=0.08)
+    card_pack = _make_card_pack(snapshot=snapshot)
+    card_pack.ai_policy_assessment = {
+        "status": "evaluated",
+        "ai_recommended_max_position_pct": 0.10,
+        "ai_recommended_target_position_range_pct": [0.06, 0.09],
+        "ai_position_stance": "near_target",
+        "recommended_action_bias": "allow_add",
+    }
+    output = _composed_output(
+        card_pack,
+        action="add_batch",
+        position_advice={
+            "current_position_pct": 0.08,
+            "suggested_target_position_pct": 0.14,
+            "max_position_pct": 0.14,
+            "suggested_cash_amount": 6000,
+            "position_size_label": "medium",
+        },
+    )
+
+    result = RiskGate().evaluate(output, card_pack)
+
+    assert result.final_action == "hold_no_add"
+    assert "target_above_ai_policy_max" in result.risk_flags
+    assert result.action_constraints["ai_recommended_max_position_pct"] == pytest.approx(0.10)
+    assert result.action_constraints["suggested_target_position_pct"] == pytest.approx(0.10)
+
+
 # === Rule 1: missing position limit blocks add ===
 
 def test_missing_max_position_pct_downgrades_add_batch_to_hold_no_add():
@@ -354,6 +384,51 @@ def test_weak_catalyst_downgrade_caps_high_confidence_to_medium():
     assert result.confidence_cap == "medium"
     assert mutated["confidence"] == "medium"
     assert mutated["action"] == "wait"
+
+
+def test_weak_catalyst_keeps_ai_supported_pullback_add():
+    snapshot = _make_snapshot(is_holding=True, position_pct=0.05)
+    weak_evt = _event(strength="weak", score=1, sentiment="neutral", news_count=1, key_events=[])
+    fund = _fundamental()
+    fund.fundamental_status = "green"
+    mkt = _market_trend()
+    mkt.trend_break_level = "none"
+    rr = _risk_reward(ratio=2.0)
+    card_pack = _make_card_pack(snapshot=snapshot, event=weak_evt, fundamental=fund, market_trend=mkt, risk_reward=rr)
+    card_pack.ai_policy_assessment = {
+        "status": "evaluated",
+        "ai_position_stance": "underweight",
+        "recommended_action_bias": "prefer_pullback_add",
+        "ai_recommended_max_position_pct": 0.20,
+    }
+    output = _composed_output(card_pack, action="add_on_pullback", max_pct=0.20)
+
+    _, result = apply_risk_gate(output, card_pack, user_question=None)
+
+    assert result.final_action == "add_on_pullback"
+    assert "weak_catalyst_soft_warning" in result.risk_flags
+
+
+def test_trend_warning_downgrades_right_side_to_pullback_when_ai_supports():
+    snapshot = _make_snapshot(is_holding=True, position_pct=0.05)
+    mkt = _market_trend()
+    mkt.trend_break_level = "warning"
+    fund = _fundamental()
+    fund.fundamental_status = "green"
+    rr = _risk_reward(ratio=2.0)
+    card_pack = _make_card_pack(snapshot=snapshot, market_trend=mkt, fundamental=fund, risk_reward=rr)
+    card_pack.ai_policy_assessment = {
+        "status": "evaluated",
+        "ai_position_stance": "underweight",
+        "recommended_action_bias": "prefer_pullback_add",
+        "ai_recommended_max_position_pct": 0.20,
+    }
+    output = _composed_output(card_pack, action="add_right_side", max_pct=0.20)
+
+    _, result = apply_risk_gate(output, card_pack, user_question=None)
+
+    assert result.final_action == "add_on_pullback"
+    assert "trend_break_warning_downgrade" in result.risk_flags
 
 
 # === Rule 5: high position blocks add ===

@@ -117,6 +117,14 @@ const router = createRouter({
       },
     },
     {
+      path: '/admin/investment-policy',
+      name: 'admin-investment-policy',
+      component: () => import('@/views/AdminInvestmentPolicyView.vue'),
+      meta: {
+        requiresAuth: true,
+      },
+    },
+    {
       path: '/admin/email',
       name: 'admin-email',
       component: () => import('@/views/AdminEmailView.vue'),

@@ -14,6 +14,9 @@ def _doc(
     passed: bool = True,
     action: str = "hold_no_add",
     trade_plan_action: str = "hold_no_add",
+    draft_action: str | None = None,
+    final_action: str | None = None,
+    ai_policy_assessment: dict | None = None,
     quality_extra: dict | None = None,
     risk_gate: dict | None = None,
     run_trace: list[dict] | None = None,
@@ -24,11 +27,16 @@ def _doc(
         "symbol": symbol,
         "created_at": created_at,
         "action": action,
+        "draft_action": draft_action or trade_plan_action,
+        "final_action": final_action or action,
+        "risk_adjusted_action": final_action or action,
         "trade_plan": {"portfolio_action": trade_plan_action},
         "risk_gate": risk_gate or {"downgraded": False, "blocked": False, "risk_flags": []},
         "run_trace": run_trace or [],
         "metadata": {},
     }
+    if ai_policy_assessment is not None:
+        doc["ai_policy_assessment"] = ai_policy_assessment
     if score is not None:
         quality = {
             "score": score,
@@ -137,6 +145,60 @@ def test_summarize_trade_plan_final_action_mismatch() -> None:
     assert summary["action_consistency"]["trade_plan_final_mismatch_count"] == 1
     assert summary["action_consistency"]["trade_plan_final_mismatch_rate"] == 0.5
     assert summary["action_consistency"]["top_mismatch_pairs"] == [{"key": "add_on_pullback -> hold_no_add", "count": 1}]
+
+
+def test_summarize_action_calibration_metrics() -> None:
+    docs = [
+        _doc(
+            "d1",
+            action="add_on_pullback",
+            trade_plan_action="add_small",
+            draft_action="add_small",
+            final_action="add_on_pullback",
+            risk_gate={
+                "downgraded": True,
+                "blocked": False,
+                "risk_flags": ["trend_break_warning_downgrade"],
+                "gate_reasons": ["技术面 warning"],
+                "action_constraints": {"snapshot": {"public_fallback_count": 0}},
+            },
+            ai_policy_assessment={
+                "status": "evaluated",
+                "ai_position_stance": "underweight",
+                "recommended_action_bias": "prefer_pullback_add",
+            },
+        ),
+        _doc(
+            "d2",
+            action="hold_no_add",
+            trade_plan_action="add_on_pullback",
+            draft_action="add_on_pullback",
+            final_action="hold_no_add",
+            risk_gate={
+                "downgraded": True,
+                "blocked": False,
+                "risk_flags": ["weak_catalyst_downgrade"],
+                "gate_reasons": ["催化偏弱"],
+                "action_constraints": {"snapshot": {"public_fallback_count": 2}},
+            },
+            ai_policy_assessment={
+                "status": "evaluated",
+                "ai_position_stance": "underweight",
+                "recommended_action_bias": "allow_add",
+            },
+        ),
+    ]
+
+    summary = TradeDecisionQualityAnalyticsService().summarize(docs)
+    calibration = summary["action_calibration"]
+
+    assert calibration["add_like_rate"] == 0.5
+    assert calibration["hold_like_rate"] == 0.5
+    assert calibration["draft_to_final_downgrade_rate"] == 1.0
+    assert calibration["ai_underweight_but_hold_count"] == 1
+    assert calibration["ai_allow_add_but_hold_count"] == 1
+    assert calibration["public_fallback_to_hold_rate"] == 1.0
+    assert calibration["final_action_distribution"][0]["key"] in {"add_on_pullback", "hold_no_add"}
 
 
 def test_summarize_empty_documents_returns_usable_summary() -> None:

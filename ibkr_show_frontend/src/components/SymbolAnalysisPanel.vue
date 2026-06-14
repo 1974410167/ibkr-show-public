@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
@@ -12,10 +12,25 @@ import LoadingBlock from '@/components/LoadingBlock.vue'
 import type {
   MetricComparisonItem,
   SymbolAiAdviceResponse,
+  SymbolAnalysisSnapshot,
+  SymbolAnalysisTask,
+  SymbolAnalysisTaskStep,
   SymbolComparisonResponse,
   SymbolFinancialsResponse,
   SymbolMarketSnapshot,
 } from '@/types/symbolAnalysis'
+
+withDefaults(defineProps<{
+  showResults?: boolean
+}>(), {
+  showResults: true,
+})
+
+const emit = defineEmits<{
+  (event: 'activate'): void
+  (event: 'state-change', state: SymbolAnalysisSnapshot): void
+  (event: 'task-change', task: SymbolAnalysisTask | null): void
+}>()
 
 const form = reactive({
   symbol: '',
@@ -30,6 +45,7 @@ const loading = ref(false)
 const aiAdviceLoading = ref(false)
 const aiAdviceError = ref('')
 const errorMessage = ref('')
+const activeTask = ref<SymbolAnalysisTask | null>(null)
 
 const metricLabels: Record<string, string> = {
   revenue: '营收',
@@ -66,8 +82,67 @@ const snapshotLabels: Record<string, string> = {
 
 const latestComparison = computed<MetricComparisonItem[]>(() => comparison.value?.latest_metric_comparison ?? [])
 
+watch(
+  [loading, errorMessage, singleFinancials, comparison, aiAdvice, aiAdviceLoading, aiAdviceError],
+  emitState,
+  { deep: true, immediate: true },
+)
+
 function normalizeInput(value: string): string {
   return value.trim().toUpperCase()
+}
+
+function emitState(): void {
+  emit('state-change', {
+    loading: loading.value,
+    errorMessage: errorMessage.value,
+    singleFinancials: singleFinancials.value,
+    comparison: comparison.value,
+    aiAdvice: aiAdvice.value,
+    aiAdviceLoading: aiAdviceLoading.value,
+    aiAdviceError: aiAdviceError.value,
+  })
+}
+
+function startLocalTask(label: string, steps: SymbolAnalysisTaskStep[]): void {
+  activeTask.value = {
+    id: `symbol-analysis-${Date.now()}`,
+    label,
+    status: 'running',
+    stage: steps[0]?.label || '运行标的分析',
+    started_at: new Date().toISOString(),
+    completed_at: null,
+    error_message: null,
+    steps,
+  }
+  emit('task-change', activeTask.value)
+}
+
+function updateLocalTask(stepId: string, status: SymbolAnalysisTaskStep['status'], stage?: string): void {
+  if (!activeTask.value) return
+  const next = {
+    ...activeTask.value,
+    stage: stage || activeTask.value.stage,
+    steps: activeTask.value.steps.map((step) => (step.id === stepId ? { ...step, status } : step)),
+  }
+  activeTask.value = next
+  emit('task-change', next)
+}
+
+function finishLocalTask(status: 'completed' | 'failed', errorMessage: string | null = null): void {
+  if (!activeTask.value) return
+  const next = {
+    ...activeTask.value,
+    status,
+    stage: status === 'completed' ? '标的分析完成' : errorMessage || '标的分析失败',
+    completed_at: new Date().toISOString(),
+    error_message: errorMessage,
+    steps: activeTask.value.steps.map((step) => (
+      step.status === 'running' || step.status === 'queued' ? { ...step, status } : step
+    )),
+  }
+  activeTask.value = next
+  emit('task-change', next)
 }
 
 function formatValue(key: string, value: number | null | undefined): string {
@@ -164,24 +239,39 @@ function confidenceLabel(value: string): string {
 }
 
 async function loadSingle(): Promise<void> {
+  emit('activate')
   const symbol = normalizeInput(form.symbol)
   if (!symbol) return
+  startLocalTask(`标的财报分析 · ${symbol}`, [
+    { id: 'financials', label: '拉取 Longbridge 财报与估值', status: 'running' },
+    { id: 'render', label: '整理财报表格与快照', status: 'queued' },
+  ])
   loading.value = true
   errorMessage.value = ''
   singleFinancials.value = null
   try {
     singleFinancials.value = await fetchSymbolFinancials(symbol)
+    updateLocalTask('financials', 'completed', '整理财报表格与快照')
+    updateLocalTask('render', 'completed', '标的分析完成')
+    finishLocalTask('completed')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载标的财报失败'
+    finishLocalTask('failed', errorMessage.value)
   } finally {
     loading.value = false
   }
 }
 
 async function loadComparison(): Promise<void> {
+  emit('activate')
   const left = normalizeInput(form.left)
   const right = normalizeInput(form.right)
   if (!left || !right) return
+  startLocalTask(`标的对比与 AI 判断 · ${left} vs ${right}`, [
+    { id: 'comparison', label: '拉取两只标的财报与估值', status: 'running' },
+    { id: 'ai_advice', label: '生成 AI 加仓/建仓判断', status: 'queued' },
+    { id: 'render', label: '整理对比结果', status: 'queued' },
+  ])
   loading.value = true
   errorMessage.value = ''
   aiAdvice.value = null
@@ -189,9 +279,13 @@ async function loadComparison(): Promise<void> {
   comparison.value = null
   try {
     comparison.value = await compareSymbols(left, right)
+    updateLocalTask('comparison', 'completed', '生成 AI 加仓/建仓判断')
     await loadAiAdvice(left, right)
+    updateLocalTask('render', 'completed', '标的分析完成')
+    finishLocalTask('completed')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载标的对比失败'
+    finishLocalTask('failed', errorMessage.value)
   } finally {
     loading.value = false
   }
@@ -200,14 +294,18 @@ async function loadComparison(): Promise<void> {
 async function loadAiAdvice(left: string, right: string): Promise<void> {
   aiAdviceLoading.value = true
   aiAdviceError.value = ''
+  updateLocalTask('ai_advice', 'running', '生成 AI 加仓/建仓判断')
   try {
     aiAdvice.value = await generateSymbolAiAdvice({
       left_symbol: left,
       right_symbol: right,
       question: '基于这两只股票的财报、估值和趋势对比，哪只更适合加仓/建仓？',
+      comparison: comparison.value ?? undefined,
     })
+    updateLocalTask('ai_advice', 'completed', '整理对比结果')
   } catch (error) {
     aiAdviceError.value = error instanceof Error ? error.message : '生成 AI 建议失败'
+    updateLocalTask('ai_advice', 'failed', aiAdviceError.value)
   } finally {
     aiAdviceLoading.value = false
   }
@@ -216,7 +314,7 @@ async function loadAiAdvice(left: string, right: string): Promise<void> {
 </script>
 
 <template>
-  <section class="symbol-analysis-page">
+  <section class="symbol-analysis-page" @click="emit('activate')" @focusin="emit('activate')">
     <section class="surface-panel">
       <div class="surface-panel__content">
         <div class="section-header">
@@ -255,10 +353,11 @@ async function loadAiAdvice(left: string, right: string): Promise<void> {
       </div>
     </section>
 
-    <LoadingBlock v-if="loading" />
-    <ErrorBlock v-if="errorMessage" :message="errorMessage" />
+    <template v-if="showResults">
+      <LoadingBlock v-if="loading" />
+      <ErrorBlock v-if="errorMessage" :message="errorMessage" />
 
-    <section v-if="singleFinancials" class="surface-panel">
+      <section v-if="singleFinancials" class="surface-panel">
       <div class="surface-panel__content">
         <div class="section-header">
           <div>
@@ -286,9 +385,9 @@ async function loadAiAdvice(left: string, right: string): Promise<void> {
         </article>
         <FinancialTable :financials="singleFinancials" :metric-labels="metricLabels" :format-value="formatValue" :format-change="formatChange" />
       </div>
-    </section>
+      </section>
 
-    <template v-if="comparison">
+      <template v-if="comparison">
       <section class="surface-panel ai-advice-panel">
         <div class="surface-panel__content">
           <div class="section-header">
@@ -403,6 +502,7 @@ async function loadAiAdvice(left: string, right: string): Promise<void> {
           </div>
         </div>
       </section>
+      </template>
     </template>
   </section>
 </template>
